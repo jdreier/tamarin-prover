@@ -600,11 +600,11 @@ getOppositeRules ctxt side (Rule rule prem _ _ _) = case rule of
                                                                                  x  -> x
                                                                                  
 -- | 'getOriginalRule' @ctxt@ @side@ @rule@ returns the original rule of protocol rule @rule@ in diff proof context @ctxt@ on side @side@.
-getOriginalRule :: DiffProofContext -> Side -> RuleACInst -> RuleAC
+getOriginalRule :: DiffProofContext -> Side -> RuleACInst -> S.Set RuleAC
 getOriginalRule ctxt side (Rule rule _ _ _ _) = case rule of
                ProtoInfo p -> case protocolRuleWithName (getAllRulesOnSide ctxt side) (L.get praciName p) of
-                                   [x]  -> x
-                                   _    -> error $ "getOriginalRule: No or more than one other rule found for protocol rule " ++ show (L.get praciName p) ++ show (getAllRulesOnSide ctxt side)
+                                   [] -> error $ "getOriginalRule: No other rule found for protocol rule " ++ show (L.get praciName p) ++ show (getAllRulesOnSide ctxt side)
+                                   x  -> S.fromList x
                IntrInfo  _ -> error $ "getOriginalRule: This should be a protocol rule: " ++ show rule
 
 
@@ -1100,7 +1100,7 @@ allOpenGoalsAreSimpleFacts ctxt sys = M.foldlWithKey goalIsSimpleFact True (L.ge
     goalIsSimpleFact :: Bool -> Goal -> GoalStatus -> Bool
     goalIsSimpleFact ret (ActionG _ fact)         (GoalStatus solved _ _) = ret && (solved || ((isTrivialFact fact /= Nothing) && (isKUFact fact)))
     goalIsSimpleFact ret (ChainG _ _)             (GoalStatus solved _ _) = ret && solved
-    goalIsSimpleFact ret (PremiseG (nid, _) fact) (GoalStatus solved _ _) = ret && (solved || (isTrivialFact fact /= Nothing) && (not (isProtocolRule r) || (getOriginalRule ctxt LHS r == getOriginalRule ctxt RHS r)))
+    goalIsSimpleFact ret (PremiseG (nid, _) fact) (GoalStatus solved _ _) = ret && (solved || (isTrivialFact fact /= Nothing) && (not (isProtocolRule r) || (getOriginalRule ctxt LHS r == getOriginalRule ctxt RHS r)) )
       where
         r = nodeRule nid sys
     goalIsSimpleFact ret (SplitG _)               (GoalStatus solved _ _) = ret && solved

@@ -904,7 +904,7 @@ lookupOpenDiffProtoDiffRule name =
 -- exists.
 addProtoRule :: ProtoRuleE -> OpenTheory -> Maybe OpenTheory
 addProtoRule ruE thy = do
-    guard nameNotUsedForDifferentRule
+--    guard nameNotUsedForDifferentRule
     return $ modify thyItems (++ [RuleItem ruE]) thy
   where
     nameNotUsedForDifferentRule =
@@ -914,7 +914,7 @@ addProtoRule ruE thy = do
 -- exists.
 addProtoDiffRule :: ProtoRuleE -> OpenDiffTheory -> Maybe OpenDiffTheory
 addProtoDiffRule ruE thy = do
-    guard nameNotUsedForDifferentRule
+--    guard nameNotUsedForDifferentRule
     return $ modify diffThyItems (++ [DiffRuleItem ruE]) thy
   where
     nameNotUsedForDifferentRule =

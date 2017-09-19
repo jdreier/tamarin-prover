@@ -1,0 +1,56 @@
+theory BAC
+begin
+
+functions: senc/2, sdec/2, mac/2, verify/2
+equations: sdec(senc(m, k), k) = m,
+           verify(mac(m, k), k) = m
+
+rule Init: // Init 
+ [ Fr(~ke), Fr(~km) ] --[ ]-> [ !KeySetup(~ke,~km) ]
+
+rule Setup: // Setup Variant 1
+ [ Fr(~ke), Fr(~km), !KeySetup(ke1,km1) ] --[ ]-> [ Key_Reader(~ke,~km), Key_Pass(~ke,~km) ]
+
+rule Setup: // Setup Variant 2
+ [ Fr(~ke), Fr(~km), !KeySetup(ke1,km1) ] --[ ]-> [ Key_Reader(diff(~ke,ke1),diff(~km,km1)), Key_Pass(diff(~ke,ke1),diff(~km,km1)) ]
+
+rule Init_Reader:
+ [ Key_Reader(~ke,~km) ] --[ ]-> [ Out('challenge'), Session_Reader_1(~ke,~km) ]
+
+rule Init_Pass:
+ [ Key_Pass(~ke,~km), In('challenge'), Fr(~nt) ] --[ ]-> [ Out(~nt), Session_Pass_1(~ke,~km,~nt) ]
+
+rule Resp_Reader:
+ let xenc = senc(<~nr,nt,~kr>,~ke)
+     xmac = mac(xenc,~km)
+ in
+ [ Session_Reader_1(~ke,~km), In(nt), Fr(~nr), Fr(~kr) ] --[ OUT_R1(<xenc,xmac>) ]-> [ Out(<xenc,xmac>), Session_Reader_2(~ke,~km,~nr,~kr,nt) ]
+
+rule Resp_Pass:
+ let xenc = senc(<nr,~nt,kr>,~ke)
+     xmac = mac(xenc,~km)
+     yenc = senc(<~nt,nr,~kt>,~ke)
+     ymac = mac(yenc,~km)
+ in
+ [ Session_Pass_1(~ke,~km,~nt), In(<xenc,xmac>), Fr(~kt) ] --[ IN_R1(<xenc,xmac>,nr,kr), OUT_R2(<yenc,ymac>) ]-> [ Out(<yenc,ymac>) ]
+
+rule Resp_Reader_2:
+ let yenc = senc(<nt,~nr,kt>,~ke)
+     ymac = mac(yenc,~km)
+ in
+ [ Session_Reader_2(~ke,~km,~nr,~kr,nt), In(<yenc,ymac>) ] --[ IN_R2(<yenc,ymac>,nt,kt), Finish() ]-> [ ]
+
+lemma chains [sources]:
+ "(All x nr kr #i. IN_R1(x,nr,kr)@i
+    ==> (Ex #j #k. K(nr)@j & K(kr)@k & j < i & k < i)
+      | (Ex #j. OUT_R1(x)@j & j < i))
+ & (All y nt kt #i. IN_R2(y,nt,kt)@i
+    ==> (Ex #j #k. K(nt)@j & K(kt)@k & j < i & k < i)
+      | (Ex #j. OUT_R2(y)@j & j < i))"
+
+
+lemma executeable:
+exists-trace
+ "Ex #i. Finish()@i"
+
+end
