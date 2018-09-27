@@ -26,43 +26,65 @@ rule tag1:
    , !Tag( ~k, ~id ) ]
  --[ Response( ~k, 'Tag' )
    , Challenge(~r2, 'Tag') 
+   , Running(<'R','T',<~k XOR r1 XOR ~r2>>)
+//   , Running(<'R','T',<~k, r1, ~r2>>)
    ]->
-   [ Out( <~r2,lh(rot(~id,hash))>)
+   [ Out( <~r2,lh(rot(~id,hash) XOR hash)>)
    , TagState(~k, r1, ~r2, hash)
    ]
 
 rule reader2:
    [ Initiated( ~r1 )
    , !Reader( ~k, ~id )
-   , In( <r2, lh(rot(~id,hash))> ) 
+   , In( <r2, lh(rot(~id,hash) XOR hash)> ) 
    ]
  --[ Alive( ~k, 'Tag' )
    , Response(~k, 'Reader') 
    , Eq( h((~r1⊕r2⊕~k)), hash )
+   , Running(<'T','R',<~k XOR ~r1 XOR r2>>)
+//   , Running(<'T','R',<~k, ~r1, r2>>)
+   , Commit(<'R','T',<~k XOR ~r1 XOR r2>>)
+//   , Commit(<'R','T',<~k, ~r1, r2>>)
    ]->
-   [ Out( rh(rot(~id,hash)) ) ]
+   [ Out( rh(rot(~id,hash) XOR hash) ) ]
 
 rule tag2:
-   [ In( rh(rot(~id,hash)) )
+   [ In( rh(rot(~id,hash) XOR hash) )
    , !Tag( ~k, ~id) 
    , TagState(~k, r1, ~r2, hash)
    ]
- --[ Alive( ~k, 'Reader' ) ]->
+ --[ Alive( ~k, 'Reader' )
+   , Commit(<'T','R',<~k XOR r1 XOR ~r2>>)
+//   , Commit(<'T','R',<~k, r1, ~r2>>)
+   ]->
    [ ]
 
 restriction equality:
   "∀ x y #i. (Eq( x, y ) @ #i) ⇒ (x = y)"
 
 // There should be an attack on this
-// FINDS ATTACK AUTOMATICALLY (2017-03-22) - (2017-04-18: attack automatically, but with 'zero', short manual exploration on "splitEqs" in attack fixes this, pick split_case_3)
+// FINDS ATTACK AUTOMATICALLY - (2017-11-09, 73593dd9747f3320384227ff086f7fca0f75c488: attack automatically
 lemma recentalive_tag:
   all-traces "∀ x #i. (Alive( x, 'Tag' ) @ #i) ⇒ (∃ y #j #k. Challenge(y, 'Reader') @k & Response( x, 'Tag' ) @ #j & k < j & j < i)"
 
-// FINDS PROOF AUTOMATICALLY (2017-03-22) (2017-04-18 - same)
+// FINDS PROOF AUTOMATICALLY (2017-11-09, 73593dd9747f3320384227ff086f7fca0f75c488)
 lemma recentalive_reader:
   all-traces "∀ x #i. (Alive( x, 'Reader' ) @ #i) ⇒ (∃ y #j #k. Challenge(y, 'Tag') @k & Response( x, 'Reader' ) @ #j & k < j & j < i)"
 
-// SHOWS CORRECT EXECUTION (2017-03-22) (2017-04-18 - same)
+// Depends on what data t is specified. FINDS PROOF/ATTACK AUTOMATICALLY. 
+lemma noninjectiveagreement_tag:
+  "All t #i. 
+    Commit(<'T','R',t>) @i
+    ==> (Ex #j. Running(<'T','R',t>) @j)"
+
+
+// Depends on what data t is specified. FINDS PROOF/ATTACK AUTOMATICALLY. 
+lemma noninjectiveagreement_reader:
+  "All t #i. 
+    Commit(<'R','T',t>) @i
+    ==> (Ex #j. Running(<'R','T',t>) @j)"
+
+// SHOWS CORRECT EXECUTION (2017-11-09, 73593dd9747f3320384227ff086f7fca0f75c488)
 lemma executable:
   exists-trace "∃ x #i #j. (Alive( x, 'Reader' ) @ #i) ∧ (Response( x, 'Tag' ) @ #j) 
            // further restriction to automatically get the desired execution

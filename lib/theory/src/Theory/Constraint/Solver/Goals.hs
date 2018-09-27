@@ -1,5 +1,6 @@
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE ViewPatterns  #-}
+{-# LANGUAGE TupleSections    #-}
+{-# LANGUAGE ViewPatterns     #-}
+{-# LANGUAGE FlexibleContexts #-}
 -- |
 -- Copyright   : (c) 2010-2012 Benedikt Schmidt & Simon Meier
 -- License     : GPL v3 (see LICENSE)
@@ -26,6 +27,7 @@ module Theory.Constraint.Solver.Goals (
 
 import           Prelude                                 hiding (id, (.))
 
+import qualified Data.ByteString.Char8                   as BC
 import qualified Data.DAG.Simple                         as D (reachableSet)
 -- import           Data.Foldable                           (foldMap)
 import qualified Data.Map                                as M
@@ -44,10 +46,11 @@ import           Extension.Data.Label
 
 import           Theory.Constraint.Solver.Contradictions (substCreatesNonNormalTerms)
 import           Theory.Constraint.Solver.Reduction
--- import           Theory.Constraint.Solver.Types
 import           Theory.Constraint.System
 import           Theory.Tools.IntruderRules (mkDUnionRule, isDExpRule, isDPMultRule, isDEMapRule)
 import           Theory.Model
+
+import           Utils.Misc                              (twoPartitions)
 
 ------------------------------------------------------------------------------
 -- Extracting Goals
@@ -83,16 +86,12 @@ openGoals sys = do
           if get sDiffSystem sys 
              -- In a diff proof, all action goals need to be solved.
              then not (solved)
-                      -- handled by 'insertAction'
---                       || isPair m || isInverse m 
---                       || isProduct m || isUnion m) 
              else
                not $    solved
                     -- message variables are not solved, except if the node already exists in the system -> facilitates finding contradictions
                     || (isMsgVar m && Nothing == M.lookup i (get sNodes sys)) || sortOfLNTerm m == LSortPub
                     -- handled by 'insertAction'
-                    || isPair m || isInverse m || isProduct m
-                 --   || isXor m
+                    || isPair m || isInverse m || isProduct m -- || isXor m
                     || isUnion m || isNullaryPublicFunction m
         ActionG _ _                               -> not solved
         PremiseG _ _                              -> not solved
@@ -156,7 +155,7 @@ openGoals sys = do
         -- We cannot deduce a message from a last node.
         guard (not $ isLast sys j)
         let derivedMsgs = concatMap toplevelTerms $
-                [ t | Fact OutFact [t] <- get rConcs ru] <|>
+                [ t | Fact OutFact _ [t] <- get rConcs ru] <|>
                 [ t | Just (DnK, t)    <- kFactView <$> get rConcs ru]
         -- m is deducible from j without an immediate contradiction
         -- if it is a derived message of 'ru' and the dependency does
@@ -219,18 +218,47 @@ solveGoal goal = do
 solveAction :: [RuleAC]          -- ^ All rules labelled with an action
             -> (NodeId, LNFact)  -- ^ The action we are looking for.
             -> Reduction String  -- ^ A sensible case name.
-solveAction rules (i, fa) = do
+solveAction rules (i, fa@(Fact _ ann _)) = do
     mayRu <- M.lookup i <$> getM sNodes
     showRuleCaseName <$> case mayRu of
-        Nothing -> do ru  <- labelNodeId i rules Nothing
-                      act <- disjunctionOfList $ get rActs ru
-                      void (solveFactEqs SplitNow [Equal fa act])
-                      return ru
+        Nothing -> case fa of
+            (Fact KUFact _ [m@(viewTerm2 -> FXor ts)]) -> do
+                   partitions <- disjunctionOfList $ twoPartitions ts
+                   case partitions of
+                       (_, []) -> do
+                            let ru = Rule (IntrInfo CoerceRule) [kdFact m] [fa] [fa] []
+                            modM sNodes (M.insert i ru)
+                            insertGoal (PremiseG (i, PremIdx 0) (kdFact m)) False
+                            return ru
+                       (a',  b') -> do
+                            let a = fAppAC Xor a'
+                            let b = fAppAC Xor b'
+                            let ru = Rule (IntrInfo (ConstrRule $ BC.pack "_xor")) [(kuFact a),(kuFact b)] [fa] [fa] []
+                            modM sNodes (M.insert i ru)
+                            mapM_ requiresKU [a, b] *> return ru
+            _                                        -> do
+                   ru  <- labelNodeId i (annotatePrems <$> rules) Nothing
+                   act <- disjunctionOfList $ get rActs ru
+                   void (solveFactEqs SplitNow [Equal fa act])
+                   return ru
 
         Just ru -> do unless (fa `elem` get rActs ru) $ do
                           act <- disjunctionOfList $ get rActs ru
                           void (solveFactEqs SplitNow [Equal fa act])
                       return ru
+  where
+    -- If the fact in the action goal has annotations, then consider annotated
+    -- versions of intruder rules (this allows high or low priority intruder knowledge
+    -- goals to propagate to intruder knowledge of subterms)
+    annotatePrems ru@(Rule ri ps cs as nvs) =
+        if not (S.null ann) && isIntruderRule ru then
+            Rule ri (annotateFact ann <$> ps) cs (annotateFact ann <$> as) nvs
+            else ru
+    requiresKU t = do
+        j <- freshLVar "vk" LSortNode
+        let faKU = kuFact t
+        insertLess j i
+        void (insertAction j faKU)
 
 -- | CR-rules *DG_{2,P}* and *DG_{2,d}*: solve a premise with a direct edge
 -- from a unifying conclusion or using a destruction chain.

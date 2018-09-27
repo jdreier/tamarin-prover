@@ -10,6 +10,7 @@ module Utils.Misc (
   , equivClasses
   , partitions
   , nonTrivialPartitions
+  , twoPartitions
  
   -- * Control
   , whileTrue
@@ -32,9 +33,10 @@ import System.Environment
 import System.IO.Unsafe
 import Data.Maybe
 import Data.Set (Set)
-import qualified Data.Set as S
+import qualified Data.Set           as S
 import Data.Map ( Map )
-import qualified Data.Map as M
+import qualified Data.Map           as M
+import qualified Data.Map.Strict    as M'
 
 import Data.Digest.Pure.SHA      (bytestringDigest, sha256)
 import Blaze.ByteString.Builder  (toLazyByteString)
@@ -79,7 +81,7 @@ equivClasses :: (Ord a, Ord b) => [(a, b)] -> M.Map b (S.Set a)
 equivClasses = 
     foldl' insertEdge M.empty 
   where
-    insertEdge m (from,to) = M.insertWith' S.union to (S.singleton from) m
+    insertEdge m (from,to) = M'.insertWith S.union to (S.singleton from) m
 
 -- | The SHA-256 hash of a string in base64 notation.
 stringSHA256 :: String -> String
@@ -112,3 +114,14 @@ bloat x (xs:xss) = ((x:xs):xss) : map (xs:) (bloat x xss)
 -- | Generate all possible partitions of a list, excluding the trivial partition
 nonTrivialPartitions :: Eq a => [a] -> [[[a]]]
 nonTrivialPartitions l = delete [l] $ partitions l
+
+-- | Generate all possible ways of partitioning a list into two partitions
+twoPartitions :: [a] -> [([a], [a])]
+twoPartitions  []    = []
+twoPartitions (x:[]) = [ ([x],[]) ]
+twoPartitions (x:xs) = (map addToFirst ps) ++ (map addToSecond ps)
+    where
+        addToFirst  (a, b) = (x:a, b)
+        addToSecond (a, b) = (a, x:b)
+        ps = twoPartitions xs
+

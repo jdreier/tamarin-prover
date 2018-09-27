@@ -89,8 +89,7 @@ module Theory (
   , cprRuleE
   , filterSide
   , addDefaultDiffLemma
-  , addProtoRuleLabels
-  , removeProtoRuleLabels
+  , addProtoRuleLabel
   , addIntrRuleLabels
 
   -- ** Open theories
@@ -173,7 +172,6 @@ module Theory (
   -- * Convenience exports
   , module Theory.Model
   , module Theory.Proof
---   , module Theory.Constraint.Solver.Types
 
   ) where
 
@@ -199,6 +197,8 @@ import           Control.Parallel.Strategies
 import           Extension.Data.Label                hiding (get)
 import qualified Extension.Data.Label                as L
 
+import           Safe                                (headMay)
+
 import           Theory.Model
 import           Theory.Proof
 import           Theory.Text.Pretty
@@ -207,7 +207,6 @@ import           Theory.Tools.InjectiveFactInstances
 import           Theory.Tools.LoopBreakers
 import           Theory.Tools.RuleVariants
 import           Theory.Tools.IntruderRules
--- import           Theory.Constraint.Solver.Types
 
 import           Term.Positions
 
@@ -299,7 +298,7 @@ closeProtoRule hnd ruE = ClosedProtoRule ruE (variantsProtoRule hnd ruE)
 -- | Close an intruder rule; i.e., compute maximum number of consecutive applications and variants
 --   Should be parallelized like the variant computation for protocol rules (JD)
 closeIntrRule :: MaudeHandle -> IntrRuleAC -> [IntrRuleAC]
-closeIntrRule hnd (Rule (DestrRule name (-1) subterm constant) prems@((Fact KDFact [t]):_) concs@[Fact KDFact [rhs]] acts nvs) =
+closeIntrRule hnd (Rule (DestrRule name (-1) subterm constant) prems@((Fact KDFact _ [t]):_) concs@[Fact KDFact _ [rhs]] acts nvs) =
   if subterm then [ru] else variantsIntruder hnd id False ru
     where
       ru = (Rule (DestrRule name (if runMaude (unifiableLNTerms rhs t)
@@ -328,7 +327,7 @@ closeRuleCache restrictions typAsms sig protoRules intrRules isdiff = -- trace (
         classifiedRules rawSources refinedSources injFactInstances
   where
     ctxt0 = ProofContext
-        sig classifiedRules injFactInstances RawSource [] AvoidInduction
+        sig classifiedRules injFactInstances RawSource [] AvoidInduction Nothing
         (error "closeRuleCache: trace quantifier should not matter here")
         (error "closeRuleCache: lemma name should not matter here") [] isdiff
         (all isSubtermRule {-$ trace (show destr ++ " - " ++ show (map isSubtermRule destr))-} destr) (any isConstantRule destr)
@@ -401,6 +400,7 @@ data LemmaAttribute =
        | HideLemma String
        | LHSLemma
        | RHSLemma
+       | LemmaHeuristic String
 --        | BothLemma
        deriving( Eq, Ord, Show, Generic, NFData, Binary )
 
@@ -610,9 +610,6 @@ type ClosedDiffTheory =
 -- type EitherTheory = Either Theory  DiffTheory
 type EitherOpenTheory = Either OpenTheory OpenDiffTheory
 type EitherClosedTheory = Either ClosedTheory ClosedDiffTheory
-
-type OpenDiffTheoryItem =
-    DiffTheoryItem OpenProtoRule OpenProtoRule DiffProofSkeleton ProofSkeleton
 
 
 -- Shared theory modification functions
@@ -843,13 +840,8 @@ addDefaultDiffLemma:: OpenDiffTheory -> OpenDiffTheory
 addDefaultDiffLemma thy = fromMaybe thy $ addDiffLemma (unprovenDiffLemma "Observational_equivalence" []) thy
 
 -- Add the rule labels to an Open Diff Theory
-addProtoRuleLabels:: OpenDiffTheory -> OpenDiffTheory
-addProtoRuleLabels thy =
-    modify diffThyItems (map addRuleLabel) thy
-  where
-    addRuleLabel :: OpenDiffTheoryItem -> OpenDiffTheoryItem
-    addRuleLabel (DiffRuleItem rule) = DiffRuleItem $ addDiffLabel rule ("DiffProto" ++ (getRuleName rule))
-    addRuleLabel x                   = x
+addProtoRuleLabel :: OpenProtoRule -> OpenProtoRule
+addProtoRuleLabel rule = addDiffLabel rule ("DiffProto" ++ (getRuleName rule))
     
 -- Add the rule labels to an Open Diff Theory
 addIntrRuleLabels:: OpenDiffTheory -> OpenDiffTheory
@@ -858,26 +850,16 @@ addIntrRuleLabels thy =
   where
     addRuleLabel :: IntrRuleAC -> IntrRuleAC
     addRuleLabel rule = addDiffLabel rule ("DiffIntr" ++ (getRuleName rule))
-
--- Add the rule labels to an Open Diff Theory
-removeProtoRuleLabels:: OpenDiffTheory -> OpenDiffTheory
-removeProtoRuleLabels thy =
-    modify diffThyItems (map removeRuleLabel) thy
-  where
-    removeRuleLabel :: OpenDiffTheoryItem -> OpenDiffTheoryItem
-    removeRuleLabel (DiffRuleItem rule) = DiffRuleItem $ removeDiffLabel rule ("DiffProto" ++ (getRuleName rule))
-    removeRuleLabel x                   = x
-
     
 -- | Open a theory by dropping the closed world assumption and values whose
--- soundness dependens on it.
+-- soundness depends on it.
 openTheory :: ClosedTheory -> OpenTheory
 openTheory  (Theory n sig c items) =
     Theory n (toSignaturePure sig) (openRuleCache c)
       (map (mapTheoryItem openProtoRule incrementalToSkeletonProof) items)
 
 -- | Open a theory by dropping the closed world assumption and values whose
--- soundness dependens on it.
+-- soundness depends on it.
 openDiffTheory :: ClosedDiffTheory -> OpenDiffTheory
 openDiffTheory  (DiffTheory n sig c1 c2 c3 c4 items) =
     DiffTheory n (toSignaturePure sig) (openRuleCache c1) (openRuleCache c2) (openRuleCache c3) (openRuleCache c4)
@@ -888,12 +870,6 @@ openDiffTheory  (DiffTheory n sig c1 c2 c3 c4 items) =
 lookupOpenProtoRule :: ProtoRuleName -> OpenTheory -> Maybe OpenProtoRule
 lookupOpenProtoRule name =
     find ((name ==) . L.get (preName . rInfo)) . theoryRules
-
--- | Find the open protocol rule with the given name.
--- REMOVE
--- lookupOpenDiffProtoRule :: Side -> ProtoRuleName -> OpenDiffTheory -> Maybe OpenProtoRule
--- lookupOpenDiffProtoRule s name =
---     find ((name ==) . L.get rInfo) . (diffTheorySideRules s)
 
 -- | Find the open protocol rule with the given name.
 lookupOpenDiffProtoDiffRule :: ProtoRuleName -> OpenDiffTheory -> Maybe OpenProtoRule
@@ -1025,6 +1001,7 @@ getProofContext l thy = ProofContext
     kind
     ( L.get (cases . thyCache)                 thy)
     inductionHint
+    (headMay [Heuristic (charToGoalRanking <$> grs) | LemmaHeuristic grs <- L.get lAttributes l])
     (toSystemTraceQuantifier $ L.get lTraceQuantifier l)
     (L.get lName l)
     ([ h | HideLemma h <- L.get lAttributes l])
@@ -1049,6 +1026,7 @@ getProofContextDiff s l thy = case s of
             kind
             ( L.get (cases . diffThyCacheLeft)                 thy)
             inductionHint
+            (headMay [Heuristic (charToGoalRanking <$> grs) | LemmaHeuristic grs <- L.get lAttributes l])
             (toSystemTraceQuantifier $ L.get lTraceQuantifier l)
             (L.get lName l)
             ([ h | HideLemma h <- L.get lAttributes l])
@@ -1062,6 +1040,7 @@ getProofContextDiff s l thy = case s of
             kind
             ( L.get (cases . diffThyCacheRight)              thy)
             inductionHint
+            (headMay [Heuristic (charToGoalRanking <$> grs) | LemmaHeuristic grs <- L.get lAttributes l])
             (toSystemTraceQuantifier $ L.get lTraceQuantifier l)
             (L.get lName l)
             ([ h | HideLemma h <- L.get lAttributes l])
@@ -1093,6 +1072,7 @@ getDiffProofContext l thy = DiffProofContext (proofContext LHS) (proofContext RH
             RefinedSource
             ( L.get (crcRefinedSources . diffThyDiffCacheLeft)              thy)
             AvoidInduction
+            (headMay [Heuristic (charToGoalRankingDiff <$> grs) | LemmaHeuristic grs <- L.get lDiffAttributes l])
             ExistsNoTrace
             ( L.get lDiffName l )
             ([ h | HideLemma h <- L.get lDiffAttributes l])
@@ -1106,6 +1086,7 @@ getDiffProofContext l thy = DiffProofContext (proofContext LHS) (proofContext RH
             RefinedSource
             ( L.get (crcRefinedSources . diffThyDiffCacheRight)              thy)
             AvoidInduction
+            (headMay [Heuristic (charToGoalRankingDiff <$> grs) | LemmaHeuristic grs <- L.get lDiffAttributes l])
             ExistsNoTrace
             ( L.get lDiffName l )
             ([ h | HideLemma h <- L.get lDiffAttributes l])
@@ -1204,8 +1185,8 @@ closeDiffTheoryWithMaude sig thy0 = do
     checkProof = checkAndExtendProver (sorryProver Nothing)
     checkDiffProof = checkAndExtendDiffProver (sorryDiffProver Nothing)
     diffRules  = diffTheoryDiffRules thy0
-    leftOpenRules  = map getLeftRule  diffRules
-    rightOpenRules = map getRightRule diffRules
+    leftOpenRules  = map (getLeftRule  . addProtoRuleLabel) diffRules
+    rightOpenRules = map (getRightRule . addProtoRuleLabel) diffRules
 
     -- Maude / Signature handle
     hnd = L.get sigmMaudeHandle sig
@@ -1651,12 +1632,13 @@ prettyLemmaName l = case L.get lAttributes l of
       as -> text (L.get lName l) <->
             (brackets $ fsep $ punctuate comma $ map prettyLemmaAttribute as)
   where
-    prettyLemmaAttribute SourceLemma    = text "sources"
-    prettyLemmaAttribute ReuseLemma     = text "reuse"
-    prettyLemmaAttribute InvariantLemma = text "use_induction"
-    prettyLemmaAttribute (HideLemma s)  = text ("hide_lemma=" ++ s)
-    prettyLemmaAttribute LHSLemma       = text "left"
-    prettyLemmaAttribute RHSLemma       = text "right"
+    prettyLemmaAttribute SourceLemma        = text "sources"
+    prettyLemmaAttribute ReuseLemma         = text "reuse"
+    prettyLemmaAttribute InvariantLemma     = text "use_induction"
+    prettyLemmaAttribute (HideLemma s)      = text ("hide_lemma=" ++ s)
+    prettyLemmaAttribute (LemmaHeuristic h) = text ("heuristic=" ++ h)
+    prettyLemmaAttribute LHSLemma           = text "left"
+    prettyLemmaAttribute RHSLemma           = text "right"
 --     prettyLemmaAttribute BothLemma      = text "both"
 
 

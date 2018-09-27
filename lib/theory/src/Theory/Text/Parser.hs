@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric, DeriveAnyClass #-}
 -- |
 -- Copyright   : (c) 2010-2012 Simon Meier, Benedikt Schmidt
 -- License     : GPL v3 (see LICENSE)
@@ -61,6 +62,7 @@ data ParseRestriction = ParseRestriction
        , pRstrFormula    :: LNFormula
        }
        deriving( Eq, Ord, Show )
+
 
 -- | True iff the restriction is a LHS restriction.
 isLeftRestriction :: ParseRestriction -> Bool
@@ -134,6 +136,10 @@ parseLemma = parseString "<unknown source>" lemma
 -- | Parse an lit with logical variables.
 llit :: Parser LNTerm
 llit = asum [freshTerm <$> freshName, pubTerm <$> pubName, varTerm <$> msgvar]
+
+-- | Parse an lit with logical variables without public names in single constants.
+llitNoPub :: Parser LNTerm
+llitNoPub = asum [freshTerm <$> freshName, varTerm <$> msgvar]
 
 -- | Lookup the arity of a non-ac symbol. Fails with a sensible error message
 -- if the operator is not known.
@@ -236,6 +242,14 @@ msetterm plit = do
 tupleterm :: Ord l => Parser (Term l) -> Parser (Term l)
 tupleterm plit = chainr1 (msetterm plit) ((\a b -> fAppPair (a,b)) <$ comma)
 
+-- | Parse a fact annotation
+factAnnotation :: Parser FactAnnotation
+factAnnotation = asum
+  [ opPlus  *> pure SolveFirst
+  , opMinus *> pure SolveLast
+  , symbol "no_precomp" *> pure NoSources
+  ]
+
 -- | Parse a fact.
 fact :: Ord l => Parser (Term l) -> Parser (Fact (Term l))
 fact plit = try (
@@ -246,21 +260,22 @@ fact plit = try (
          (c:_) | isUpper c -> return ()
                | otherwise -> fail "facts must start with upper-case letters"
        ts    <- parens (commaSep (msetterm plit))
-       mkProtoFact multi i ts
+       ann   <- option [] $ list factAnnotation
+       mkProtoFact multi i (S.fromList ann) ts
     <?> "fact" )
   where
     singleTerm _ constr [t] = return $ constr t
     singleTerm f _      ts  = fail $ "fact '" ++ f ++ "' used with arity " ++
                                      show (length ts) ++ " instead of arity one"
 
-    mkProtoFact multi f = case map toUpper f of
+    mkProtoFact multi f ann = case map toUpper f of
       "OUT" -> singleTerm f outFact
-      "IN"  -> singleTerm f inFact
+      "IN"  -> singleTerm f (inFactAnn ann)
       "KU"  -> singleTerm f kuFact
-      "KD"  -> return . Fact KDFact
-      "DED" -> return . Fact DedFact
+      "KD"  -> singleTerm f kdFact
+      "DED" -> singleTerm f dedLogFact
       "FR"  -> singleTerm f freshFact
-      _     -> return . protoFact multi f
+      _     -> return . protoFactAnn multi f ann
 
 
 ------------------------------------------------------------------------------
@@ -301,7 +316,7 @@ ruleAttribute = asum
         hc <- hexColor
         case hexToRGB hc of
             Just rgb  -> return rgb
-            Nothing -> fail $ "Color could not be parsed to RGB"
+            Nothing -> fail $ "Color code " ++ show hc ++ " could not be parsed to RGB"
 
 -- | Parse RuleInfo
 protoRuleInfo :: Parser ProtoRuleEInfo
@@ -580,6 +595,7 @@ lemmaAttribute = asum
   , symbol "reuse"         *> pure ReuseLemma
   , symbol "use_induction" *> pure InvariantLemma
   , symbol "hide_lemma="   *> (HideLemma <$> identifier)
+  , symbol "heuristic="    *> (LemmaHeuristic <$> identifier)
   , symbol "left"          *> pure LHSLemma
   , symbol "right"         *> pure RHSLemma
 --   , symbol "both"          *> pure BothLemma
@@ -735,6 +751,8 @@ builtins =
           *> extendSig asymEncMaudeSig
       , try (symbol "signing")
           *> extendSig signatureMaudeSig
+      , try (symbol "revealing-signing")
+          *> extendSig revealSignatureMaudeSig
       , symbol "hashing"
           *> extendSig hashMaudeSig
       ]
@@ -747,6 +765,9 @@ functions =
         f   <- BC.pack <$> identifier <* opSlash
         k   <- fromIntegral <$> natural
         priv <- option Public (symbol "[private]" *> pure Private)
+        if (BC.unpack f `elem` ["mun", "one", "exp", "mult", "inv", "pmult", "em", "zero", "xor"])
+          then fail $ "`" ++ BC.unpack f ++ "` is a reserved function name for builtins."
+          else return ()
         sig <- getState
         case lookup f [ o | o <- (S.toList $ stFunSyms sig)] of
           Just kp' | kp' /= (k,priv) ->
@@ -760,12 +781,12 @@ equations =
       symbol "equations" *> colon *> commaSep1 equation *> pure ()
     where
       equation = do
-        rrule <- RRule <$> term llit True <*> (equalSign *> term llit True)
+        rrule <- RRule <$> term llitNoPub True <*> (equalSign *> term llitNoPub True)
         case rRuleToCtxtStRule rrule of
           Just str ->
               modifyState (addCtxtStRule str)
           Nothing  ->
-              fail $ "Not a subterm rule: " ++ show rrule
+              fail $ "Not a correct equation: " ++ show rrule
 
 ------------------------------------------------------------------------------
 -- Parsing Theories

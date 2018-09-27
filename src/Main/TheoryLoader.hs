@@ -19,6 +19,7 @@ module Main.TheoryLoader (
   , loadClosedThy
   , loadClosedThyWfReport
   , loadClosedThyString
+  , reportOnClosedThyStringWellformedness
 
   -- ** Loading open diff theories
   , loadOpenDiffThy
@@ -27,6 +28,7 @@ module Main.TheoryLoader (
   , loadClosedDiffThy
   , loadClosedDiffThyWfReport
   , loadClosedDiffThyString
+  , reportOnClosedDiffThyStringWellformedness
 
   
   -- ** Constructing automatic provers
@@ -46,7 +48,8 @@ import           Prelude                             hiding (id, (.))
 
 import           Data.Char                           (toLower)
 import           Data.Label
-import           Data.List                           (isPrefixOf)
+import           Data.List                           (isPrefixOf,intersperse)
+import           Data.Map                            (keys)
 -- import           Data.Monoid
 import           Data.FileEmbed                      (embedFile)
 
@@ -58,7 +61,6 @@ import           System.Console.CmdArgs.Explicit
 
 import           Theory
 import           Theory.Text.Parser                  (parseIntruderRules, parseOpenTheory, parseOpenTheoryString, parseOpenDiffTheory, parseOpenDiffTheoryString)
-import           Theory.Text.Pretty
 import           Theory.Tools.AbstractInterpretation (EvaluationStyle(..))
 import           Theory.Tools.IntruderRules          (specialIntruderRules, subtermIntruderRules
                                                      , multisetIntruderRules, xorIntruderRules)
@@ -66,6 +68,8 @@ import           Theory.Tools.Wellformedness
 
 import           Main.Console
 import           Main.Environment
+
+import           Text.Parsec                hiding ((<|>))
 
 
 ------------------------------------------------------------------------------
@@ -85,7 +89,7 @@ theoryLoadFlags =
   , flagOpt "5" ["bound", "b"] (updateArg "bound") "INT"
       "Bound the depth of the proofs"
 
-  , flagOpt "s" ["heuristic"] (updateArg "heuristic") "(s|S|o|p|P|l|c|C|i|I)+"
+  , flagOpt "s" ["heuristic"] (updateArg "heuristic") ("(" ++ (intersperse '|' $ keys goalRankingIdentifiers) ++ ")+")
       "Sequence of goal rankings to use (default 's')"
 
   , flagOpt "summary" ["partial-evaluation"] (updateArg "partialEvaluation")
@@ -100,6 +104,9 @@ theoryLoadFlags =
 
   , flagNone ["quit-on-warning"] (addEmptyArg "quit-on-warning")
       "Strict mode that quits on any warning that is emitted."
+
+  , flagOpt "./oracle" ["oraclename"] (updateArg "oraclename") "FILE"
+      "Path to the oracle heuristic (default './oracle')."
 
 --  , flagOpt "" ["diff"] (updateArg "diff") "OFF|ON"
 --      "Turn on observational equivalence (default OFF)."
@@ -192,7 +199,41 @@ loadClosedDiffThyString as input =
         Right thy -> fmap Right $ do
           thy1 <- addMessageDeductionRuleVariantsDiff thy
           closeDiffThy as thy1
-             
+
+-- | Load an open theory from a string.
+loadOpenThyString :: Arguments -> String -> Either ParseError OpenTheory
+loadOpenThyString as = parseOpenTheoryString (diff as ++ defines as ++ quitOnWarning as)
+
+-- | Load an open theory from a string.
+loadOpenDiffThyString :: Arguments -> String -> Either ParseError OpenDiffTheory
+loadOpenDiffThyString as = parseOpenDiffTheoryString (diff as ++ defines as ++ quitOnWarning as)
+
+-- | Load a close theory and only report on well-formedness errors.
+reportOnClosedThyStringWellformedness :: Arguments -> String -> IO String
+reportOnClosedThyStringWellformedness as input = do
+    case loadOpenThyString as input of
+      Left  err -> return $ "parse error: " ++ show err
+      Right thy ->
+        case checkWellformedness thy of
+          []     -> return ""
+          report -> do
+            if elem "quit-on-warning" (quitOnWarning as) then error "quit-on-warning mode selected - aborting on wellformedness errors." else putStrLn ""
+            return $ " WARNING: ignoring the following wellformedness errors: " ++(renderDoc $ prettyWfErrorReport report)
+
+-- | Load a closed diff theory and report on well-formedness errors.
+reportOnClosedDiffThyStringWellformedness :: Arguments -> String -> IO String
+reportOnClosedDiffThyStringWellformedness as input = do
+    case loadOpenDiffThyString as input of
+      Left  err   -> return $ "parse error: " ++ show err
+      Right thy0 -> do
+        thy1 <- addMessageDeductionRuleVariantsDiff thy0
+        -- report
+        case checkWellformednessDiff thy1 of
+          []     -> return ""
+          report -> do
+            if elem "quit-on-warning" (quitOnWarning as) then error "quit-on-warning mode selected - aborting on wellformedness errors." else putStrLn ""
+            return $ " WARNING: ignoring the following wellformedness errors: " ++(renderDoc $ prettyWfErrorReport report)
+
 -- | Close a theory according to arguments.
 closeThy :: Arguments -> OpenTheory -> IO ClosedTheory
 closeThy as thy0 = do
@@ -238,7 +279,7 @@ closeDiffThy as thy0 = do
   -- fine-grained.
   let thy2 = wfCheckDiff thy0
   -- close and prove
-  cthy <- closeDiffTheory (maudePath as) (addDefaultDiffLemma (addProtoRuleLabels thy2))
+  cthy <- closeDiffTheory (maudePath as) (addDefaultDiffLemma thy2)
   return $ proveDiffTheory lemmaSelector diffLemmaSelector prover diffprover $ partialEvaluation cthy
     where
       -- apply partial application
@@ -293,33 +334,18 @@ constructAutoProver as =
     --------------------------------
     proofBound      = read <$> findArg "bound" as
 
+    oracleName = case findArg "oraclename" as of
+      Nothing       -> "./oracle"
+      Just fileName -> "./" ++ fileName
+
     rankings = case findArg "heuristic" as of
-        Just (rawRankings@(_:_)) -> map ranking rawRankings
+        Just (rawRankings@(_:_)) -> map setOracleName $ map charToGoalRanking rawRankings
         Just []                  -> error "--heuristic: at least one ranking must be given"
         _                        -> [SmartRanking False]
 
-    ranking 's' = SmartRanking False
-    ranking 'S' = SmartRanking True
-    ranking 'o' = OracleRanking
-    ranking 'p' = SapicRanking
-    ranking 'l' = SapicLivenessRanking
-    ranking 'P' = SapicPKCS11Ranking
-    ranking 'c' = UsefulGoalNrRanking
-    ranking 'C' = GoalNrRanking
-    ranking 'i' = InjRanking False
-    ranking 'I' = InjRanking True
-    ranking r   = error $ render $ fsep $ map text $ words $
-      "Unknown goal ranking '" ++ [r] ++ "'. Use one of the following:\
-      \ 's' for the smart ranking without loop breakers,\
-      \ 'S' for the smart ranking with loop breakers,\
-      \ 'o' for oracle ranking,\
-      \ 'p' for the smart ranking optimized for translations coming from SAPIC (http://sapic.gforge.inria.fr),\
-      \ 'l' for the smart ranking optimized for translations coming from SAPIC proving liveness properties,\
-      \ 'P' for the smart ranking optimized for a specific model of PKCS11, translated using SAPIC,\
-      \ 'i' for the ranking modified for the proof of stateful injective protocols without loop breakers,\
-      \ 'I' for the ranking modified for the proof of stateful injective protocols with loop breakers,\
-      \ 'c' for the creation order and useful goals first,\
-      \ and 'C' for the creation order."
+    setOracleName (OracleRanking _) = OracleRanking oracleName
+    setOracleName (OracleSmartRanking _) = OracleRanking oracleName
+    setOracleName r = r
 
     stopOnTrace = case (map toLower) <$> findArg "stopOnTrace" as of
       Nothing     -> CutDFS
@@ -341,23 +367,19 @@ constructAutoDiffProver as =
     --------------------------------
     proofBound      = read <$> findArg "bound" as
 
+    oracleName = case findArg "oraclename" as of
+      Nothing       -> "./oracle"
+      Just fileName -> "./" ++ fileName
+
     rankings = case findArg "heuristic" as of
-        Just (rawRankings@(_:_)) -> map ranking rawRankings
+        Just (rawRankings@(_:_)) -> map setOracleName $ map charToGoalRankingDiff rawRankings
         Just []                  -> error "--heuristic: at least one ranking must be given"
         _                        -> [SmartDiffRanking]
 
-    ranking 's' = SmartRanking False
-    ranking 'S' = SmartRanking True
-    ranking 'o' = OracleRanking
-    ranking 'c' = UsefulGoalNrRanking
-    ranking 'C' = GoalNrRanking
-    ranking r   = error $ render $ fsep $ map text $ words $
-      "Unknown goal ranking '" ++ [r] ++ "'. Use one of the following:\
-      \ 's' for the smart ranking without loop breakers,\
-      \ 'S' for the smart ranking with loop breakers,\
-      \ 'o' for oracle ranking,\
-      \ 'c' for the creation order and useful goals first,\
-      \ and 'C' for the creation order."
+
+    setOracleName (OracleRanking _) = OracleRanking oracleName
+    setOracleName (OracleSmartRanking _) = OracleRanking oracleName
+    setOracleName r = r
 
     stopOnTrace = case (map toLower) <$> findArg "stopOnTrace" as of
       Nothing     -> CutDFS

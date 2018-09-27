@@ -81,11 +81,11 @@ rule iequality:
 --   included independently of the message theory
 specialIntruderRules :: Bool -> [IntrRuleAC]
 specialIntruderRules diff =
-    [ kuRule CoerceRule      [kdFact x_var]                 (x_var)         []
+    [ kuRule CoerceRule      [kdFact x_var]                 (x_var)         [] 
     , kuRule PubConstrRule   []                             (x_pub_var)     [(x_pub_var)]
-    , kuRule FreshConstrRule [Fact FreshFact [x_fresh_var]] (x_fresh_var)   []
-    , Rule ISendRule [kuFact x_var]  [Fact InFact [x_var]] [kLogFact x_var] []
-    , Rule IRecvRule [Fact OutFact [x_var]] [Fact KDFact [x_var]] []        []
+    , kuRule FreshConstrRule [freshFact x_fresh_var] (x_fresh_var)          []
+    , Rule ISendRule [kuFact x_var]  [inFact x_var] [kLogFact x_var]        []
+    , Rule IRecvRule [outFact x_var] [kdFact x_var] []                      []
     ] ++
     if diff 
        then [ Rule IEqualityRule [kuFact x_var, kdFact x_var]  [] [] [] ]
@@ -177,10 +177,10 @@ minimizeIntruderRules diff rules =
                    else r:checked
     
     -- We assume that the KD-Fact is the first fact, which is the case in destructionRules above
-    isDoublePremiseRule (Rule _ ((Fact KDFact [t]):prems) concs _ _) =
+    isDoublePremiseRule (Rule _ ((Fact KDFact _ [t]):prems) concs _ _) = 
         frees concs == []
          && not (any containsPrivate (t:(concat $ map getFactTerms prems)))
-         && isMsgVar t && any (==(Fact KUFact [t])) prems
+         && isMsgVar t && any (==(kuFact t)) prems
     isDoublePremiseRule _                                               = False
 
 -- | @subtermIntruderRules diff maudeSig@ returns the set of intruder rules for
@@ -208,12 +208,17 @@ constructionRules fSig =
 -- | @dhIntruderRules@ computes the intruder rules for DH
 dhIntruderRules :: Bool -> WithMaude [IntrRuleAC]
 dhIntruderRules diff = reader $ \hnd -> minimizeIntruderRules diff $
-    [ expRule (ConstrRule (append (pack "_") expSymString)) kuFact return
-    , invRule (ConstrRule (append (pack "_") expSymString)) kuFact return
+    [ expRule  (ConstrRule (append (pack "_") expSymString))  kuFact return
+    , invRule  (ConstrRule (append (pack "_") invSymString))  kuFact return
+    -- The constructors for one and mult are only necessary in diff mode.
+    -- They are never applied in trace mode as all corresponding goals are solved directly,
+    -- but they  will show up in the message theory, which is reassuring for users.
+    , oneRule  (ConstrRule (append (pack "_") oneSymString))  kuFact return
+    , multRule (ConstrRule (append (pack "_") multSymString)) kuFact return
     ] ++
     concatMap (variantsIntruder hnd id True)
       [ expRule (DestrRule (append (pack "_") expSymString) 0 True False) kdFact (const [])
-      , invRule (DestrRule (append (pack "_") expSymString) 0 True False) kdFact (const [])
+      , invRule (DestrRule (append (pack "_") invSymString) 0 True False) kdFact (const [])
       ]
   where
     x_var_0 = varTerm (LVar "x" LSortMsg 0)
@@ -227,11 +232,25 @@ dhIntruderRules diff = reader $ \hnd -> minimizeIntruderRules diff $
         conc = fAppExp (x_var_0, x_var_1)
         concfact = kudFact conc
 
+    multRule mkInfo kudFact mkAction =
+        Rule mkInfo [bfact, efact] [concfact] (mkAction concfact) []
+      where
+        bfact = kudFact x_var_0
+        efact = kuFact  x_var_1
+        conc = fAppAC Mult [x_var_0, x_var_1]
+        concfact = kudFact conc
+
     invRule mkInfo kudFact mkAction =
         Rule mkInfo [bfact] [concfact] (mkAction concfact) []
       where
         bfact    = kudFact x_var_0
         conc     = fAppInv x_var_0
+        concfact = kudFact conc
+
+    oneRule mkInfo kudFact mkAction =
+        Rule mkInfo [] [concfact] (mkAction concfact) []
+      where
+        conc     = fAppNoEq oneSym []
         concfact = kudFact conc
 
 
@@ -277,7 +296,10 @@ normRule' (Rule i ps cs as nvs) = reader $ \hnd ->
 ------------------------------------------------------------------------------
 
 multisetIntruderRules ::  [IntrRuleAC]
-multisetIntruderRules = [mkDUnionRule [x_var, y_var] x_var]
+multisetIntruderRules = [mkDUnionRule [x_var, y_var] x_var,
+    -- The constructor is only necessary in diff mode.
+    -- It is never applied in trace mode, but will show up in the message theory, which is reassuring for users.
+                         mkCUnionRule [x_var, y_var]]
   where x_var = varTerm (LVar "x"  LSortMsg   0)
         y_var = varTerm (LVar "y"  LSortMsg   0)
 
@@ -293,10 +315,13 @@ mkDUnionRule t_prems t_conc =
 
 xorIntruderRules ::  [IntrRuleAC]
 xorIntruderRules = [mkDXorRule [x_var, y_var] [y_var, z_var] x_xor_z, 
-                    mkDXorRule [x_var, y_var] [y_var] x_var]
+                    mkDXorRule [x_var, y_var] [y_var] x_var,
+                    mkCXorRule x_var y_var x_xor_y,
+                    zeroConstructor]
     where x_var   = varTerm (LVar "x"  LSortMsg   0)
           y_var   = varTerm (LVar "y"  LSortMsg   0)
           z_var   = varTerm (LVar "z"  LSortMsg   0)
+          x_xor_y = fAppAC Xor [x_var, y_var]
           x_xor_z = fAppAC Xor [x_var, z_var]
 
 mkDXorRule :: [LNTerm] -> [LNTerm] -> LNTerm -> IntrRuleAC
@@ -304,6 +329,24 @@ mkDXorRule t_prems t_prems2 t_conc =
     Rule (DestrRule (append (pack "_") xorSymString) 1 True False)
          [kdFact $ fAppAC Xor t_prems, kuFact $ fAppAC Xor t_prems2]
          [kdFact t_conc] [] []
+
+mkCXorRule :: LNTerm -> LNTerm -> LNTerm -> IntrRuleAC
+mkCXorRule t_prems t_prems2 t_conc =
+    Rule (ConstrRule (append (pack "_") xorSymString))
+         [kuFact t_prems, kuFact t_prems2]
+         [kuFact t_conc] [kuFact t_conc] []
+
+zeroConstructor :: IntrRuleAC
+zeroConstructor = Rule (ConstrRule (append (pack "_") zeroSymString))
+        [] [kuZero] [kuZero] []
+    where
+        kuZero = kuFact $ fAppNoEq zeroSym []
+
+mkCUnionRule :: [LNTerm] -> IntrRuleAC
+mkCUnionRule terms =
+    Rule (ConstrRule (append (pack "_") unionSymString))
+         (map kuFact terms)
+         [kuFact $ fAppAC Union terms] [kuFact $ fAppAC Union terms] []
 
 ------------------------------------------------------------------------------
 -- Bilinear Pairing Intruder rules.
@@ -350,10 +393,10 @@ bpVariantsIntruder hnd ru = do
     -- fact that all other variants are of the form
     -- "pmult(..), pmult(..) -> em(..)"
     case ruvariant of
-      Rule i [Fact KDFact args@[viewTerm -> Lit (Var _)], yfact] concs actions nvs ->
-        return $ Rule i [Fact KUFact args, yfact] concs actions nvs
-      Rule i [yfact, Fact KDFact args@[viewTerm -> Lit (Var _)]] concs actions nvs ->
-        return $ Rule i [yfact, Fact KUFact args] concs actions nvs
+      Rule i [Fact KDFact an args@[viewTerm -> Lit (Var _)], yfact] concs actions nvs ->
+        return $ Rule i [Fact KUFact an args, yfact] concs actions nvs
+      Rule i [yfact, Fact KDFact an args@[viewTerm -> Lit (Var _)]] concs actions nvs ->
+        return $ Rule i [yfact, Fact KUFact an args] concs actions nvs
       _ -> return ruvariant
 
   where
@@ -370,8 +413,8 @@ bpVariantsIntruder hnd ru = do
 
 isDRule :: ByteString -> Rule (RuleInfo t IntrRuleACInfo) -> Bool
 isDRule ruString ru = case get rInfo ru of
-    IntrInfo (DestrRule n _ _ _) | n == ruString -> True
-    _                                            -> False
+    IntrInfo (DestrRule n _ _ _) | n == (append (pack "_") ruString) -> True
+    _                                                                -> False
 
 isDExpRule, isDPMultRule, isDEMapRule
     :: Rule (RuleInfo t IntrRuleACInfo) -> Bool

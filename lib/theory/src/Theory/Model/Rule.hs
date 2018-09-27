@@ -91,6 +91,7 @@ module Theory.Model.Rule (
   , isTrivialProtoVariantAC
   , getNewVariables
   , getSubstitutionsFixingNewVars
+  , compareRulesUpToNewVars
 
   -- ** Conversion
   , ruleACToIntrRuleAC
@@ -98,6 +99,9 @@ module Theory.Model.Rule (
   , ruleACIntrToRuleACInst
   , getLeftRule
   , getRightRule
+  , constrRuleToDestrRule
+  , destrRuleToConstrRule
+  , destrRuleToDestrRule
 
   -- ** Construction
   , someRuleACInst
@@ -141,7 +145,7 @@ import qualified Data.ByteString.Char8 as BC
 -- import           Data.Foldable        (foldMap)
 import           Data.Data
 import           Data.List
--- import qualified Data.Set              as S
+import qualified Data.Set              as S
 import qualified Data.Map              as M
 import           Data.Monoid
 -- import           Data.Maybe            (fromMaybe)
@@ -160,6 +164,7 @@ import           Logic.Connectives
 
 import           Term.LTerm
 import           Term.Rewriting.Norm  (nf', norm')
+import           Term.Builtin.Convenience (var)
 import           Term.Unification
 import           Theory.Model.Fact
 import           Theory.Text.Pretty
@@ -180,7 +185,7 @@ data Rule i = Rule {
        -- contains initially the new variables, then their instantiations
        , _rNewVars :: [LNTerm]
        }
-       deriving( Eq, Ord, Show, Data, Typeable, Generic)
+       deriving(Eq, Ord, Show, Data, Typeable, Generic)
 
 instance NFData i => NFData (Rule i)
 instance Binary i => Binary (Rule i)
@@ -222,10 +227,24 @@ enumConcs = zip [(ConcIdx 0)..] . L.get rConcs
 -- Instances
 ------------
 
+-- we need special instances for Eq and Ord to ignore the new variable instantiations when comparing rules
 -- instance (Eq t) => Eq (Rule t) where
 --     (Rule i0 ps0 cs0 as0 _) == (Rule i1 ps1 cs1 as1 _) =
 --         (i0 == i1) && (ps0 == ps1) && (cs0 == cs1) && (as0 == as1)
--- 
+
+compareRulesUpToNewVars :: (Ord i) => Rule i -> Rule i -> Ordering
+compareRulesUpToNewVars (Rule i0 ps0 cs0 as0 _) (Rule i1 ps1 cs1 as1 _) =
+        if i0 == i1 then
+           if ps0 == ps1 then
+              if cs0 == cs1 then
+                   compare as0 as1
+                 else
+                   compare cs0 cs1
+              else
+                 compare ps0 ps1
+           else
+              compare i0 i1
+
 -- deriving instance (Ord t) => Ord (Rule t)
 
 instance Functor Rule where
@@ -238,7 +257,7 @@ instance (Show i, HasFrees i) => HasFrees (Rule i) where
         (foldFrees f cs `mappend`) $
         (foldFrees f as `mappend`) $
         (foldFrees f nvs)
-    -- for the moment we do not include the new variables in the occurrences
+    -- We do not include the new variables in the occurrences
     foldFreesOcc f c (Rule i ps cs as _) =
         foldFreesOcc f ((show i):c) (ps, cs, as)
     mapFrees f (Rule i ps cs as nvs) =
@@ -448,6 +467,49 @@ ruleACIntrToRuleAC (Rule ri ps cs as nvs) = Rule (IntrInfo ri) ps cs as nvs
 -- | Converts between these two types of rules.
 ruleACIntrToRuleACInst :: IntrRuleAC -> RuleACInst
 ruleACIntrToRuleACInst (Rule ri ps cs as nvs) = Rule (IntrInfo ri) ps cs as nvs
+
+-- | Converts between constructor and destructor rules.
+constrRuleToDestrRule :: RuleAC -> Int -> Bool -> Bool -> [RuleAC]
+constrRuleToDestrRule (Rule (IntrInfo (ConstrRule name)) ps' cs _ _) i s c
+    -- we remove the actions and new variables as destructors do not have actions or new variables
+    = map toRule $ permutations ps'
+    where
+        toRule :: [LNFact] -> RuleAC 
+        toRule []     = error "Bug in constrRuleToDestrRule. Please report."
+        toRule (p:ps) = Rule (IntrInfo (DestrRule name i s c)) ((convertKUtoKD p):ps) (map convertKUtoKD cs) [] []
+constrRuleToDestrRule _ _ _ _ = error "Not a destructor rule."
+
+-- | Converts between destructor and constructor rules.
+destrRuleToConstrRule :: FunSym -> Int -> RuleAC -> RuleAC
+destrRuleToConstrRule f l (Rule (IntrInfo (DestrRule name _ _ _)) ps cs _ _)
+    = toRule (map convertKDtoKU ps ++ kuFacts) (conclusions cs)
+    where
+        -- we add the conclusion as an action as constructors have this action
+        toRule :: [LNFact] -> [LNFact] -> RuleAC
+        toRule ps' cs' = Rule (IntrInfo (ConstrRule name)) ps' cs' cs' []
+
+        conclusions [] = []
+        -- KD and KU facts only have one term
+        conclusions ((Fact KDFact ann (m:ms)):cs') = (Fact KUFact ann ((addTerms m):ms)):(conclusions cs')
+        conclusions                    (c:cs') =                               c:(conclusions cs')
+
+        addTerms (FAPP f' t) | f'==f = fApp f (t ++ newvars)
+        addTerms  t                  = fApp f (t:newvars)
+
+        kuFacts = map kuFact newvars
+
+        newvars = map (var "z") [1..(toInteger $ l-(length ps))]
+destrRuleToConstrRule _ _ _ = error "Not a constructor rule."
+
+-- | Creates variants of a destructor rule, where KD and KU facts are permuted.
+destrRuleToDestrRule :: RuleAC -> [RuleAC]
+destrRuleToDestrRule (Rule (IntrInfo (DestrRule name i s c)) ps' cs as nv)
+    = map toRule $ permutations (map convertKDtoKU ps')
+    where
+        toRule []     = error "Bug in destrRuleToDestrRule. Please report."
+        toRule (p:ps) = Rule (IntrInfo (DestrRule name i s c)) ((convertKUtoKD p):ps) cs as nv
+destrRuleToDestrRule _ = error "Not a destructor rule."
+
 
 -- Instances
 ------------
@@ -716,37 +778,37 @@ getSubstitutionsFixingNewVars _ _
 multRuleInstance :: Int -> RuleAC
 multRuleInstance n = (Rule (IntrInfo (ConstrRule $ BC.pack "_mult")) (map xifact [1..n]) [prod] [prod] [])
   where
-    prod = Fact KUFact [(FAPP (AC Mult) (map xi [1..n]))]
+    prod = kuFact (FAPP (AC Mult) (map xi [1..n]))
     
     xi :: Int -> LNTerm
     xi k = (LIT $ Var $ LVar "x" LSortMsg (toInteger k))
     
     xifact :: Int -> LNFact
-    xifact k = Fact KUFact [(xi k)]
+    xifact k = kuFact (xi k)
 
 -- | Returns a union rule instance of the given size.
 unionRuleInstance :: Int -> RuleAC
 unionRuleInstance n = (Rule (IntrInfo (ConstrRule $ BC.pack "_union")) (map xifact [1..n]) [prod] [prod] [])
   where
-    prod = Fact KUFact [(FAPP (AC Union) (map xi [1..n]))]
+    prod = kuFact (FAPP (AC Union) (map xi [1..n]))
     
     xi :: Int -> LNTerm
     xi k = (LIT $ Var $ LVar "x" LSortMsg (toInteger k))
     
     xifact :: Int -> LNFact
-    xifact k = Fact KUFact [(xi k)]
+    xifact k = kuFact (xi k)
 
 -- | Returns a xor rule instance of the given size.
 xorRuleInstance :: Int -> RuleAC
 xorRuleInstance n = (Rule (IntrInfo (ConstrRule $ BC.pack "_xor")) (map xifact [1..n]) [prod] [prod] [])
   where
-    prod = Fact KUFact [(FAPP (AC Xor) (map xi [1..n]))]
+    prod = Fact KUFact S.empty [(FAPP (AC Xor) (map xi [1..n]))]
     
     xi :: Int -> LNTerm
     xi k = (LIT $ Var $ LVar "x" LSortMsg (toInteger k))
     
     xifact :: Int -> LNFact
-    xifact k = Fact KUFact [(xi k)]
+    xifact k = Fact KUFact S.empty [(xi k)]
 
 type RuleACConstrs = Disj LNSubstVFresh
 
@@ -832,13 +894,13 @@ someRuleACInstAvoidingFixing r s subst =
       
 -- | Add the diff label to a rule
 addDiffLabel :: Rule a -> String -> Rule a
-addDiffLabel (Rule info prems concs acts nvs) name = Rule info prems concs (acts ++ [Fact {factTag = ProtoFact Linear name 0, factTerms = []}]) nvs
+addDiffLabel (Rule info prems concs acts nvs) name = Rule info prems concs (acts ++ [Fact {factTag = ProtoFact Linear name 0, factAnnotations = S.empty, factTerms = []}]) nvs
 
 -- | Remove the diff label from a rule
 removeDiffLabel :: Rule a -> String -> Rule a
 removeDiffLabel (Rule info prems concs acts nvs) name = Rule info prems concs (filter isNotDiffAnnotation acts) nvs
   where
-    isNotDiffAnnotation fa = (fa /= Fact {factTag = ProtoFact Linear name 0, factTerms = []})
+    isNotDiffAnnotation fa = (fa /= Fact {factTag = ProtoFact Linear name 0, factAnnotations = S.empty, factTerms = []})
 
 -- Unification
 --------------
@@ -875,7 +937,7 @@ equalRuleUpToRenaming r1@(Rule rn1 pr1 co1 ac1 nvs1) r2@(Rule rn2 pr2 co2 ac2 nv
        unifs eq hnd = unifyLNTerm eq `runReader` hnd
        eqs = foldl matchFacts (Just $ zipWith Equal nvs1 nvs2) $ zip (pr1++co1++ac1) (pr2++co2++ac2)
        matchFacts Nothing  _                                    = Nothing
-       matchFacts (Just l) (Fact f1 t1, Fact f2 t2) | f1 == f2  = Just ((zipWith Equal t1 t2)++l) 
+       matchFacts (Just l) (Fact f1 _ t1, Fact f2 _ t2) | f1 == f2  = Just ((zipWith Equal t1 t2)++l)
                                                     | otherwise = Nothing
 
 ------------------------------------------------------------------------------
@@ -993,7 +1055,7 @@ prettyNamedRule prefix ppInfo ru =
     ppFacts' list    = ppList prettyLNFact list
     ppFacts proj     = ppList prettyLNFact $ L.get proj ru
     ppFactsList proj = fsep [operator_ "[", ppFacts proj, operator_ "]"]
-    isNotDiffAnnotation fa = (fa /= Fact {factTag = ProtoFact Linear ("Diff" ++ getRuleNameDiff ru) 0, factTerms = []})
+    isNotDiffAnnotation fa = (fa /= Fact {factTag = ProtoFact Linear ("Diff" ++ getRuleNameDiff ru) 0, factAnnotations = S.empty, factTerms = []})
     ppAttributes = case ruleAttributes ru of
         []    -> text ""
         attrs -> hcat $ [text "[", hsep $ map prettyRuleAttribute attrs, text "]"]

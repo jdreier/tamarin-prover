@@ -58,12 +58,17 @@ module Term.Term (
     , pmultSymString
     , emapSymString
     , unionSymString
+    , oneSymString
+    , multSymString
+    , zeroSymString
     , xorSymString
     
     -- ** Function symbols
     , diffSym
     , expSym
     , pmultSym
+    , oneSym
+    , zeroSym
 
     -- ** concrete signatures
     , dhFunSig
@@ -81,7 +86,7 @@ module Term.Term (
 
     ) where
 
-import           Data.Monoid
+-- import           Data.Monoid
 -- import           Data.Foldable (foldMap)
 
 import qualified Data.ByteString.Char8 as BC
@@ -105,7 +110,7 @@ fAppZero :: Term a
 fAppZero = fAppNoEq zeroSym []
 
 -- | Smart constructors for diff, pair, exp, pmult, and emap.
-fAppDiff, fAppPair, fAppExp,fAppPMult :: (Term a, Term a) -> Term a
+fAppDiff, fAppPair, fAppExp, fAppPMult :: (Term a, Term a) -> Term a
 fAppDiff (x,y)  = fAppNoEq diffSym  [x, y]
 fAppPair (x,y)  = fAppNoEq pairSym  [x, y]
 fAppExp  (b,e)  = fAppNoEq expSym   [b, e]

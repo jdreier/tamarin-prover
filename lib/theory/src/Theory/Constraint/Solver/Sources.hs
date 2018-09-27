@@ -43,7 +43,7 @@ import           Control.Parallel.Strategies
 -- import           System.Environment
 -- import           System.IO.Unsafe
 
-import           Text.PrettyPrint.Highlight
+-- import           Text.PrettyPrint.Highlight
 
 import           Extension.Data.Label
 import           Extension.Prelude
@@ -52,7 +52,6 @@ import           Theory.Constraint.Solver.Contradictions (contradictorySystem)
 import           Theory.Constraint.Solver.Goals
 import           Theory.Constraint.Solver.Reduction
 import           Theory.Constraint.Solver.Simplify
--- import           Theory.Constraint.Solver.Types
 import           Theory.Constraint.System
 import           Theory.Model
 
@@ -136,7 +135,9 @@ solveAllSafeGoals ths' =
                             then True 
                             else (trace "Stopping precomputation, too many chain goals." False)
         ActionG _ fa  -> not (isKUFact fa)
-        PremiseG _ fa -> not (isKUFact fa)
+        -- we do not solve KD goals for Xor facts as insertAction inserts
+        -- these goals directly. This prevents loops in the precomputations
+        PremiseG _ fa -> not (isKUFact fa) && not (isKDXorFact fa) && not (isNoSourcesFact fa)
         DisjG _       -> doSplit
         -- Uncomment to get more extensive case splitting
         SplitG _      -> doSplit --extensiveSplitting &&
@@ -145,7 +146,7 @@ solveAllSafeGoals ths' =
     usefulGoal (_, (_, Useful)) = True
     usefulGoal _                = False
 
-    isKDPrem (PremiseG _ fa,_) = isKDFact fa
+    isKDPrem (PremiseG _ fa,_) = (isKDFact fa) && (not (isKDXorFact fa))
     isKDPrem _                 = False
     isChainPrem1 (ChainG _ (_,PremIdx 1),_) = True
     isChainPrem1 _                          = False
@@ -173,6 +174,8 @@ solveAllSafeGoals ths' =
             safeGoals       = fst <$> filter (safeGoal splitAllowed chainsLeft) filteredGoals
             remainingChains ((ChainG _ _):_) = chainsLeft-1
             remainingChains _                = chainsLeft
+            -- we do not solve KD goals for Xor facts as insertAction inserts
+            -- these goals directly. This prevents loops in the precomputations
             kdPremGoals     = fst <$> filter (\g -> isKDPrem g || isChainPrem1 g) goals
             usefulGoals     = fst <$> filter usefulGoal goals
             nextStep :: Maybe (Reduction [String], Maybe Source)
@@ -218,7 +221,7 @@ removeRedundantCases ctxt stableVars getSys cases0 =
     -- decorate with index and normed version of the system
     decoratedCases = map (second addNormSys) $  zip [(0::Int)..] cases0
     -- drop cases where the normed systems coincide
-    cases          =   map (fst . snd) . sortOn fst . sortednubOn (snd . snd) $ decoratedCases
+    cases          =   map (fst . snd) . sortOn fst . sortednubBy (\(_,(_, x)) (_,(_, y)) -> compareSystemsUpToNewVars x y) $ decoratedCases
 
     addNormSys = id &&& ((modify sEqStore dropNameHintsBound) . renameDropNameHints . getSys)
 
@@ -273,8 +276,8 @@ matchToGoal ctxt th0 goalTerm =
   where
     -- this code reflects the precomputed cases in 'precomputeSources'
     maybeMatcher (PremiseG _ faTerm, PremiseG _ faPat)  = factTag faTerm == factTag faPat
-    maybeMatcher ( ActionG _ (Fact KUFact [tTerm])
-                 , ActionG _ (Fact KUFact [tPat]))      =
+    maybeMatcher ( ActionG _ (Fact KUFact _ [tTerm])
+                 , ActionG _ (Fact KUFact _ [tPat]))      =
         case (viewTerm tPat, viewTerm tTerm) of
             (Lit  (Var v),_) | lvarSort v == LSortFresh -> sortOfLNTerm tPat == LSortFresh
             (FApp o _, FApp o' _)                       -> o == o'
@@ -331,6 +334,7 @@ applySource ctxt th0 goal = case matchToGoal ctxt th0 goal of
   where
     keepVarBindings = M.fromList (map (\v -> (v, v)) (frees goal))
 
+
 -- | Saturate the sources with respect to each other such that no
 -- additional splitting is introduced; i.e., only rules with a single or no
 -- conclusion are used for the saturation.
@@ -371,17 +375,17 @@ precomputeSources ctxt restrictions =
     protoGoals = someProtoGoal <$> absProtoFacts
     msgGoals   = someKUGoal <$> absMsgFacts
 
-    getProtoFact (Fact KUFact _ ) = mzero
-    getProtoFact (Fact KDFact _ ) = mzero
-    getProtoFact fa               = return fa
+    getProtoFact (Fact KUFact _ _ ) = mzero
+    getProtoFact (Fact KDFact _ _ ) = mzero
+    getProtoFact fa                 = return fa
 
-    absFact (Fact tag ts) = (tag, length ts)
+    absFact (Fact tag ann ts) = (tag, ann, length ts)
 
     nMsgVars n = [ varTerm (LVar "t" LSortMsg i) | i <- [1..fromIntegral n] ]
 
-    someProtoGoal :: (FactTag, Int) -> Goal
-    someProtoGoal (tag, arity) =
-        PremiseG (someNodeId, PremIdx 0) (Fact tag (nMsgVars arity))
+    someProtoGoal :: (FactTag, S.Set FactAnnotation, Int) -> Goal
+    someProtoGoal (tag, ann, arity) =
+        PremiseG (someNodeId, PremIdx 0) (Fact tag ann (nMsgVars arity))
 
     someKUGoal :: LNTerm -> Goal
     someKUGoal m = ActionG someNodeId (kuFact m)
@@ -392,9 +396,9 @@ precomputeSources ctxt restrictions =
     rules = get pcRules ctxt
     absProtoFacts = sortednub $ do
         ru <- joinAllRules rules
-        fa <- absFact <$> (getProtoFact =<< (get rConcs ru ++ get rPrems ru))
+        fa@(tag,_,_) <- absFact <$> (getProtoFact =<< (get rConcs ru ++ get rPrems ru))
         -- exclude facts handled specially by the prover
-        guard (not $ fst fa `elem` [OutFact, InFact, FreshFact])
+        guard (not $ tag `elem` [OutFact, InFact, FreshFact])
         return fa
 
     absMsgFacts :: [LNTerm]

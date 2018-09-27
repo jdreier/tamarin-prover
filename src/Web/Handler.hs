@@ -66,7 +66,7 @@ import           Theory                       (
     openDiffTheory, 
     prettyClosedDiffTheory, prettyOpenDiffTheory
   )
-import           Theory.Proof (AutoProver(..), SolutionExtractor(..), Prover, DiffProver, apHeuristic)
+import           Theory.Proof (AutoProver(..), SolutionExtractor(..), Prover, DiffProver, apDefaultHeuristic)
 import           Text.PrettyPrint.Html
 import           Theory.Constraint.System.Dot
 import           Theory.Constraint.System.JSON  -- for export of constraint system to JSON 
@@ -79,6 +79,7 @@ import           Web.Types
 import           Yesod.Core
 
 import           Control.Monad.Trans.Resource (runResourceT)
+import           Control.Monad.Trans.Unlift
 
 import           Data.Label
 import           Data.Maybe
@@ -493,7 +494,8 @@ postRootR = do
                       Right thy -> do
                           void $ putDiffTheory Nothing
                                   (Just $ Upload $ T.unpack $ fileName fileinfo) thy
-                          setMessage "Loaded new theory!"
+                          wfReport <- liftIO $ thyWf yesod (T.unpack $ T.decodeUtf8 $ BS.concat content)
+                          setMessage $ toHtml $ "Loaded new theory!" ++  wfReport
                  else do
                     closedThy <- liftIO $ parseThy yesod (T.unpack $ T.decodeUtf8 $ BS.concat content)
                     case closedThy of
@@ -501,7 +503,8 @@ postRootR = do
                       Right thy -> do
                           void $ putTheory Nothing
                                   (Just $ Upload $ T.unpack $ fileName fileinfo) thy
-                          setMessage "Loaded new theory!"
+                          wfReport <- liftIO $ thyWf yesod (T.unpack $ T.decodeUtf8 $ BS.concat content)
+                          setMessage $ toHtml $ "Loaded new theory!" ++ wfReport
     theories <- getTheories
     defaultLayout $ do
       setTitle "Welcome to the Tamarin prover"
@@ -594,7 +597,7 @@ getTheoryPathMR idx path = do
         (\thy -> nextSmartThyPath thy (TheoryProof lemma proofPath))
         (JsonAlert "Sorry, but the prover failed on the selected method!")
       where
-        heuristic = apHeuristic (tiAutoProver ti)
+        heuristic = apDefaultHeuristic (tiAutoProver ti)
 
     --
     -- Handle generic paths by trying to render them
@@ -622,13 +625,13 @@ getTheoryPathDiffMR idx path = do
         (\thy -> nextSmartDiffThyPath thy (DiffTheoryProof s lemma proofPath))
         (JsonAlert "Sorry, but the prover failed on the selected method!")
       where
-        heuristic = apHeuristic (dtiAutoProver ti)
+        heuristic = apDefaultHeuristic (dtiAutoProver ti)
     goDiff _ (DiffTheoryDiffMethod lemma proofPath i) ti = modifyDiffTheory ti
         (\thy -> return $ applyDiffMethodAtPath thy lemma proofPath heuristic i)
         (\thy -> nextSmartDiffThyPath thy (DiffTheoryDiffProof lemma proofPath))
         (JsonAlert "Sorry, but the prover failed on the selected method!")
       where
-        heuristic = apHeuristic (dtiAutoProver ti)
+        heuristic = apDefaultHeuristic (dtiAutoProver ti)
 
     --
     -- Handle generic paths by trying to render them

@@ -46,7 +46,7 @@ import           Data.Char                    (toUpper)
 import           Data.List
 import qualified Data.Map                     as M
 import           Data.Maybe
-import           Data.Monoid
+-- import           Data.Monoid
 import qualified Data.Set                     as S
 import qualified Data.Text                    as T
 import           Data.Time.Format             (formatTime)
@@ -78,6 +78,7 @@ import           Logic.Connectives
 import           Theory
 import           Theory.Constraint.System.Dot (nonEmptyGraph,nonEmptyGraphDiff)
 import           Theory.Text.Pretty
+import           Theory.Tools.Wellformedness
 
 import           Web.Settings
 import           Web.Types
@@ -91,11 +92,12 @@ applyMethodAtPath :: ClosedTheory -> String -> ProofPath
                   -> Heuristic             -- ^ How to extract/order the proof methods.
                   -> Int                   -- What proof method to use.
                   -> Maybe ClosedTheory
-applyMethodAtPath thy lemmaName proofPath heuristic i = do
+applyMethodAtPath thy lemmaName proofPath defaultHeuristic i = do
     lemma <- lookupLemma lemmaName thy
     subProof <- get lProof lemma `atPath` proofPath
     let ctxt  = getProofContext lemma thy
         sys   = psInfo (root subProof)
+        heuristic = fromMaybe defaultHeuristic $ get pcHeuristic ctxt
         ranking = useHeuristic heuristic (length proofPath)
     methods <- (map fst . rankProofMethods ranking ctxt) <$> sys
     method <- if length methods >= i then Just (methods !! (i-1)) else Nothing
@@ -110,11 +112,12 @@ applyMethodAtPathDiff :: ClosedDiffTheory -> Side -> String -> ProofPath
                       -> Heuristic             -- ^ How to extract/order the proof methods.
                       -> Int                   -- What proof method to use.
                       -> Maybe ClosedDiffTheory
-applyMethodAtPathDiff thy s lemmaName proofPath heuristic i = do
+applyMethodAtPathDiff thy s lemmaName proofPath defaultHeuristic i = do
     lemma <- lookupLemmaDiff s lemmaName thy
     subProof <- get lProof lemma `atPath` proofPath
     let ctxt  = getProofContextDiff s lemma thy
         sys   = psInfo (root subProof)
+        heuristic = fromMaybe defaultHeuristic $ get pcHeuristic ctxt
         ranking = useHeuristic heuristic (length proofPath)
     methods <- (map fst . rankProofMethods ranking ctxt) <$> sys
     method <- if length methods >= i then Just (methods !! (i-1)) else Nothing
@@ -129,11 +132,12 @@ applyDiffMethodAtPath :: ClosedDiffTheory -> String -> ProofPath
                       -> Heuristic             -- ^ How to extract/order the proof methods.
                       -> Int                   -- What proof method to use.
                       -> Maybe ClosedDiffTheory
-applyDiffMethodAtPath thy lemmaName proofPath heuristic i = do
+applyDiffMethodAtPath thy lemmaName proofPath defaultHeuristic i = do
     lemma <- lookupDiffLemma lemmaName thy
     subProof <- get lDiffProof lemma `atPathDiff` proofPath
     let ctxt  = getDiffProofContext lemma thy
         sys   = dpsInfo (root subProof)
+        heuristic = fromMaybe defaultHeuristic $ get pcHeuristic $ get dpcPCLeft ctxt
         ranking = useHeuristic heuristic (length proofPath)
     methods <- (map fst . rankDiffProofMethods ranking ctxt) <$> sys
     method <- if length methods >= i then Just (methods !! (i-1)) else Nothing
@@ -552,7 +556,9 @@ subProofSnippet renderUrl tidx ti lemma proofPath ctxt prf =
 
     nCases                  = show $ M.size $ children prf
     depth                   = length proofPath
-    ranking                 = useHeuristic (apHeuristic $ tiAutoProver ti) depth
+    heuristic               = fromMaybe (apDefaultHeuristic $ tiAutoProver ti)
+                                $ get pcHeuristic ctxt
+    ranking                 = useHeuristic heuristic depth
     proofMethods            = rankProofMethods ranking ctxt
     subCases                = concatMap refSubCase $ M.toList $ children prf
     refSubCase (name, prf') =
@@ -627,7 +633,9 @@ subProofDiffSnippet renderUrl tidx ti s lemma proofPath ctxt prf =
 
     nCases                  = show $ M.size $ children prf
     depth                   = length proofPath
-    ranking                 = useHeuristic (apHeuristic $ dtiAutoProver ti) depth
+    heuristic               = fromMaybe (apDefaultHeuristic $ dtiAutoProver ti)
+                                $ get pcHeuristic ctxt
+    ranking                 = useHeuristic heuristic depth
     proofMethods            = rankProofMethods ranking ctxt
     subCases                = concatMap refSubCase $ M.toList $ children prf
     refSubCase (name, prf') =
@@ -716,7 +724,9 @@ subDiffProofSnippet renderUrl tidx ti lemma proofPath ctxt prf =
 
     nCases                  = show $ M.size $ children prf
     depth                   = length proofPath
-    ranking                 = useHeuristic (apHeuristic $ dtiAutoProver ti) depth
+    heuristic               = fromMaybe (apDefaultHeuristic $ dtiAutoProver ti)
+                                $ get pcHeuristic $ get dpcPCLeft ctxt
+    ranking                 = useHeuristic heuristic depth
     diffProofMethods        = rankDiffProofMethods ranking ctxt
     subCases                = concatMap refSubCase $ M.toList $ children prf
     refSubCase (name, prf') =
@@ -912,6 +922,7 @@ htmlThyPath renderUrl info path =
           Theory: #{get thyName $ tiTheory info}
           \ (Loaded at #{formatTime defaultTimeLocale "%T" $ tiTime info}
           \ from #{show $ tiOrigin info})
+          \ #{preEscapedToMarkup wfErrors}
         <div id="help">
           <h3>Quick introduction
           <noscript>
@@ -971,6 +982,9 @@ htmlThyPath renderUrl info path =
                 \ stops after finding a solution, and
                 \ <span class="keys">A</span>
                 \ searches for all solutions.
+                \ Needs to have a #
+                <tt>sorry
+                \ selected to work.
             <tr>
               <td>
                 <span class="keys">b/B
@@ -981,12 +995,20 @@ htmlThyPath renderUrl info path =
                 \ stops after finding a solution, and
                 \ <span class="keys">B</span>
                 \ searches for all solutions.
+                \ Needs to have a #
+                <tt>sorry
+                \ selected to work.
             <tr>
               <td>
                 <span class="keys">?
               <td>
                 Display this help message.
       |] renderUrl
+         where
+             wfErrors = case report of
+                             [] -> ""
+                             _  -> "<div class=\"wf-warning\">\nWARNING: the following wellformedness checks failed!<br /><br />\n" ++ (renderHtmlDoc . htmlDoc $ prettyWfErrorReport report) ++ "\n</div>"
+             report = checkWellformedness $ openTheory thy
 
 -- | Render the item in the given theory given by the supplied path.
 htmlDiffThyPath :: RenderUrl    -- ^ The function for rendering Urls.
@@ -1035,6 +1057,7 @@ htmlDiffThyPath renderUrl info path =
           Theory: #{get diffThyName $ dtiTheory info}
           \ (Loaded at #{formatTime defaultTimeLocale "%T" $ dtiTime info}
           \ from #{show $ dtiOrigin info})
+          \ #{preEscapedToMarkup wfErrors}
         <div id="help">
           <h3>Quick introduction
           <noscript>
@@ -1094,6 +1117,9 @@ htmlDiffThyPath renderUrl info path =
                 \ stops after finding a solution, and
                 \ <span class="keys">A</span>
                 \ searches for all solutions.
+                \ Needs to have a #
+                <tt>sorry
+                \ selected to work.
             <tr>
               <td>
                 <span class="keys">b/B
@@ -1104,12 +1130,20 @@ htmlDiffThyPath renderUrl info path =
                 \ stops after finding a solution, and
                 \ <span class="keys">B</span>
                 \ searches for all solutions.
+                \ Needs to have a #
+                <tt>sorry
+                \ selected to work.
             <tr>
               <td>
                 <span class="keys">?
               <td>
                 Display this help message.
       |] renderUrl
+         where
+             wfErrors = case report of
+                             [] -> ""
+                             _  -> "<div class=\"wf-warning\">\nWARNING: the following wellformedness checks failed!<br /><br />\n" ++ (renderHtmlDoc . htmlDoc $ prettyWfErrorReport report) ++ "\n</div>"
+             report = checkWellformednessDiff $ openDiffTheory thy
 
 
 
@@ -1198,8 +1232,8 @@ imgThyPath imgFormat (graphChoice, graphCommand) cacheDir_ compact showJsonGraph
           renderedOrRendering n = do
               graphExists <- doesFileExist graphPath
               imgExists <- doesFileExist imgPath
-              if (n <= 0 || (graphExists && not imgExists))
-                  then do threadDelay 100             -- wait 10 ms
+              if (n > 0 && graphExists && not imgExists)
+                  then do threadDelay (10 * 1000) -- wait 10 ms
                           renderedOrRendering (n - 1)
                   else return imgExists
 
@@ -1330,8 +1364,8 @@ imgDiffThyPath imgFormat dotCommand cacheDir_ compact simplificationLevel abbrev
           renderedOrRendering n = do
               dotExists <- doesFileExist dotPath
               imgExists <- doesFileExist imgPath
-              if (n <= 0 || (dotExists && not imgExists))
-                  then do threadDelay 100             -- wait 10 ms
+              if (n > 0 && dotExists && not imgExists)
+                  then do threadDelay (10 * 1000) -- wait 10 ms
                           renderedOrRendering (n - 1)
                   else return imgExists
 

@@ -76,6 +76,7 @@ import           Prelude                                 hiding (id, (.))
 
 import qualified Data.Foldable                           as F
 import qualified Data.Map                                as M
+import qualified Data.Map.Strict                         as M'
 import qualified Data.Set                                as S
 import qualified Data.ByteString.Char8                   as BC
 import           Data.List                               (mapAccumL)
@@ -97,11 +98,8 @@ import           Extension.Prelude
 import           Logic.Connectives
 
 import           Theory.Constraint.Solver.Contradictions
--- import           Theory.Constraint.Solver.Types
 import           Theory.Constraint.System
 import           Theory.Model
-
-import           Utils.Misc
 
 ------------------------------------------------------------------------------
 -- The constraint reduction monad
@@ -140,12 +138,13 @@ execReduction m ctxt se fs =
 data ChangeIndicator = Unchanged | Changed
        deriving( Eq, Ord, Show )
 
+instance Semigroup ChangeIndicator where
+    Changed   <> _         = Changed
+    _         <> Changed   = Changed
+    Unchanged <> Unchanged = Unchanged
+
 instance Monoid ChangeIndicator where
     mempty = Unchanged
-
-    Changed   `mappend` _         = Changed
-    _         `mappend` Changed   = Changed
-    Unchanged `mappend` Unchanged = Unchanged
 
 -- | Return 'True' iff there was a change.
 wasChanged :: ChangeIndicator -> Bool
@@ -223,8 +222,8 @@ labelNodeId = \i rules parent -> do
     -- | Import a rule with all its variables renamed to fresh variables.
     importRule ru = someRuleACInst ru `evalBindT` noBindings
 
-    mkISendRuleAC m = return $ Rule (IntrInfo (ISendRule))
-                                    [kuFact m] [inFact m] [kLogFact m] []
+    mkISendRuleAC ann m = return $ Rule (IntrInfo (ISendRule))
+                                    [kuFactAnn ann m] [inFact m] [kLogFact m] []
 
 
     mkFreshRuleAC m = Rule (ProtoInfo (ProtoRuleACInstInfo FreshRule [] []))
@@ -234,15 +233,15 @@ labelNodeId = \i rules parent -> do
 
     exploitPrem i ru (v, fa) = case fa of
         -- CR-rule *DG2_2* specialized for *In* facts.
-        Fact InFact [m] -> do
+        Fact InFact ann [m] -> do
             j <- freshLVar "vf" LSortNode
-            ruKnows <- mkISendRuleAC m
+            ruKnows <- mkISendRuleAC ann m
             modM sNodes (M.insert j ruKnows)
             modM sEdges (S.insert $ Edge (j, ConcIdx 0) (i, v))
             exploitPrems j ruKnows
 
         -- CR-rule *DG2_2* specialized for *Fr* facts.
-        Fact FreshFact [m] -> do
+        Fact FreshFact _ [m] -> do
             j <- freshLVar "vf" LSortNode
             modM sNodes (M.insert j (mkFreshRuleAC m))
             unless (isFreshVar m) $ do
@@ -256,7 +255,7 @@ labelNodeId = \i rules parent -> do
         _ | isKUFact fa -> do
               j <- freshLVar "vk" LSortNode
               insertLess j i
-              void (insertAction j fa False)
+              void (insertAction j fa)
 
           -- Store premise goal for later processing using CR-rule *DG2_2*
           | otherwise -> insertGoal (PremiseG (i,v) fa) (v `elem` breakers)
@@ -281,8 +280,8 @@ insertEdges edges = do
 --
 -- FIXME: Ensure that intermediate products are also solved before stating
 -- that no rule is applicable.
-insertAction :: NodeId -> LNFact -> Bool -> Reduction ChangeIndicator
-insertAction i fa parentXor = do
+insertAction :: NodeId -> LNFact -> Reduction ChangeIndicator
+insertAction i fa@(Fact _ ann _) = do
     present <- (goal `M.member`) <$> getM sGoals
     isdiff <- getM sDiffSystem
     nodePresent <- (i `M.member`) <$> getM sNodes
@@ -296,7 +295,7 @@ insertAction i fa parentXor = do
                           -- if the node is already present in the graph, do not insert it again. (This can be caused by substitutions applying and changing a goal.)
                           if not nodePresent
                              then do
-                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_pair")) ([(Fact KUFact [m1]),(Fact KUFact [m2])]) ([fa]) ([fa]) []))
+                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_pair")) ([(kuFactAnn ann m1),(kuFactAnn ann m2)]) ([fa]) ([fa]) []))
                                insertGoal goal False
                                markGoalAsSolved "pair" goal
                                requiresKU m1 *> requiresKU m2 *> return Changed
@@ -315,7 +314,7 @@ insertAction i fa parentXor = do
                           -- if the node is already present in the graph, do not insert it again. (This can be caused by substitutions applying and changing a goal.)
                           if not nodePresent
                              then do
-                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_inv")) ([(Fact KUFact [m])]) ([fa]) ([fa]) []))
+                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_inv")) ([(kuFactAnn ann m)]) ([fa]) ([fa]) []))
                                insertGoal goal False
                                markGoalAsSolved "inv" goal
                                requiresKU m *> return Changed
@@ -334,7 +333,7 @@ insertAction i fa parentXor = do
                           -- if the node is already present in the graph, do not insert it again. (This can be caused by substitutions applying and changing a goal.)
                           if not nodePresent
                              then do
-                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_mult")) (map (\x -> Fact KUFact [x]) ms) ([fa]) ([fa]) []))
+                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_mult")) (map (\x -> kuFactAnn ann x) ms) ([fa]) ([fa]) []))
                                insertGoal goal False
                                markGoalAsSolved "mult" goal
                                mapM_ requiresKU ms *> return Changed
@@ -347,27 +346,6 @@ insertAction i fa parentXor = do
                           insertGoal goal False
                           mapM_ requiresKU ms *> return Changed
 
-                Just (UpK, viewTerm2 -> FXor ms) | not parentXor -> do
-                -- In the diff case, add xor rule instead of goal
-                    partList <- disjunctionOfList $ partitions ms
-                    let part = map toXor partList
-                    if partList == [ms]
-                       then do
-                            insertGoal goal False
-                            return Changed
-                       else -- here we insert the node as we mark it as solved to have a cleaner output
-                            -- if the node is already present in the graph, do not insert it again. (This can be caused by substitutions applying and changing a goal.)
-                            if not nodePresent
-                                then do
-                                    modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_xor")) (map (\x -> Fact KUFact [x]) part) ([fa]) ([fa]) []))
-                                    insertGoal goal False
-                                    markGoalAsSolved "xor" goal
-                                    mapM_ requiresKUXor part *> return Changed
-                                else do
-                                    insertGoal goal False
-                                    markGoalAsSolved "exists" goal
-                                    return Changed
-
                 Just (UpK, viewTerm2 -> FUnion ms) -> do
                 -- In the diff case, add union (?) rule instead of goal
                     if isdiff
@@ -375,7 +353,7 @@ insertAction i fa parentXor = do
                           -- if the node is already present in the graph, do not insert it again. (This can be caused by substitutions applying and changing a goal.)
                           if not nodePresent
                              then do
-                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_union")) (map (\x -> Fact KUFact [x]) ms) ([fa]) ([fa]) []))
+                               modM sNodes (M.insert i (Rule (IntrInfo (ConstrRule $ BC.pack "_union")) (map (\x -> kuFactAnn ann x) ms) ([fa]) ([fa]) []))
                                insertGoal goal False
                                markGoalAsSolved "union" goal
                                mapM_ requiresKU ms *> return Changed
@@ -392,24 +370,14 @@ insertAction i fa parentXor = do
                     insertGoal goal False
                     return Unchanged
   where
-    -- apply xor if more than one term
-    toXor []                 = error "Reduction: no empty partitions permitted."
-    toXor (x:xs) | xs == []  = x
-                 | otherwise = fAppAC Xor (x:xs)
-    
     goal = ActionG i fa
     -- Here we rely on the fact that the action is new. Otherwise, we might
     -- loop due to generating new KU-nodes that are merged immediately.
     requiresKU t = do
       j <- freshLVar "vk" LSortNode
-      let faKU = kuFact t
+      let faKU = kuFactAnn ann t
       insertLess j i
-      void (insertAction j faKU False)
-    requiresKUXor t = do
-      j <- freshLVar "vk" LSortNode
-      let faKU = kuFact t
-      insertLess j i
-      void (insertAction j faKU True)
+      void (insertAction j faKU)
 
 -- | Insert a 'Less' atom. @insertLess i j@ means that *i < j* is added.
 insertLess :: NodeId -> NodeId -> Reduction ()
@@ -428,7 +396,7 @@ insertLast i = do
 insertAtom :: LNAtom -> Reduction ChangeIndicator
 insertAtom ato = case ato of
     EqE x y       -> solveTermEqs SplitNow [Equal x y]
-    Action i fa   -> insertAction (ltermNodeId' i) fa False
+    Action i fa   -> insertAction (ltermNodeId' i) fa
     Less i j      -> do insertLess (ltermNodeId' i) (ltermNodeId' j)
                         return Unchanged
     Last i        -> insertLast (ltermNodeId' i)
@@ -526,7 +494,7 @@ combineGoalStatus (GoalStatus solved1 age1 loops1)
 insertGoalStatus :: Goal -> GoalStatus -> Reduction ()
 insertGoalStatus goal status = do
     age <- getM sNextGoalNr
-    modM sGoals $ M.insertWith' combineGoalStatus goal (set gsNr age status)
+    modM sGoals $ M'.insertWith combineGoalStatus goal (set gsNr age status)
     sNextGoalNr =: succ age
 
 -- | Insert a 'Goal' and store its age.
@@ -646,9 +614,9 @@ substGoals = do
         -- Look out for KU-actions that might need to be solved again.
         ActionG i fa@(kFactView -> Just (UpK, m))
           | (isMsgVar m || isProduct m || isUnion m {-|| isXor m-}) && (apply subst m /= m) ->
-              insertAction i (apply subst fa) False
+              insertAction i (apply subst fa)
         _ -> do modM sGoals $
-                  M.insertWith' combineGoalStatus (apply subst goal) status
+                  M'.insertWith combineGoalStatus (apply subst goal) status
                 return Unchanged
 
     return (mconcat changes)
@@ -752,7 +720,7 @@ solveRuleEqs split eqs = do
     contradictoryIf (not $ all evalEqual $ map (fmap (get rInfo)) eqs)
     solveListEqs (solveFactEqs split) $
         map (fmap (get rConcs)) eqs ++ map (fmap (get rPrems)) eqs
-        ++ map (fmap (get rActs)) eqs ++ map (fmap (map termFact . get rNewVars)) eqs
+        ++ map (fmap (get rActs)) eqs
 
 -- | Solve a number of equalities between lists interpreted as free terms
 -- using the given solver for solving the entailed per-element equalities.
