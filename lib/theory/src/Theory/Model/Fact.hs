@@ -81,6 +81,7 @@ module Theory.Model.Fact (
   , LNFact
   , unifyLNFactEqs
   , unifiableLNFacts
+  , unifyLNFactEqsIgAC
 
   -- * Pretty-Printing
 
@@ -373,6 +374,13 @@ type LFact c = Fact (LTerm c)
 -- | Facts used for proving; i.e. variables fixed to logical variables
 -- and constant fixed to names.
 type LNFact = Fact LNTerm
+
+-- | Unify a list of @LFact@ equalities.
+unifyLNFactEqsIgAC :: [Equal LNFact] -> [LNSubstVFresh]
+unifyLNFactEqsIgAC eqs
+  | all (evalEqual . fmap factTag) eqs =
+      unifyLNTermIgAC (map (fmap (fAppList . factTerms)) eqs)
+  | otherwise = []
 
 -- | Unify a list of @LFact@ equalities.
 unifyLNFactEqs :: [Equal LNFact] -> WithMaude [LNSubstVFresh]

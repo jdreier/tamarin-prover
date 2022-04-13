@@ -80,7 +80,7 @@ simplifySystem = do
           void substSystem
           -- Perform one simplification pass.
           isdiff <- getM sDiffSystem
-          -- In the diff case, we cannot enfore N4-N6.
+          -- In the diff case, we cannot enforce N4-N6.
           if isdiff
             then do
               (c1,c3) <- enforceFreshAndKuNodeUniqueness

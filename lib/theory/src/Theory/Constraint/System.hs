@@ -181,6 +181,9 @@ module Theory.Constraint.System (
   
   , isDiffSystem
   , sDiffSystem
+  
+  , sRuleVariants
+  , sACSubstitutions
 
   -- * Formula simplification
   , impliedFormulas
@@ -193,7 +196,7 @@ module Theory.Constraint.System (
 
   ) where
 
--- import           Debug.Trace
+import           Debug.Trace
 -- import           Debug.Trace.Ignore
 
 import           Prelude                              hiding (id, (.))
@@ -314,18 +317,20 @@ data GoalStatus = GoalStatus
 
 -- | A constraint system.
 data System = System
-    { _sNodes          :: M.Map NodeId RuleACInst
-    , _sEdges          :: S.Set Edge
-    , _sLessAtoms      :: S.Set (NodeId, NodeId)
-    , _sLastAtom       :: Maybe NodeId
-    , _sEqStore        :: EqStore
-    , _sFormulas       :: S.Set LNGuarded
-    , _sSolvedFormulas :: S.Set LNGuarded
-    , _sLemmas         :: S.Set LNGuarded
-    , _sGoals          :: M.Map Goal GoalStatus
-    , _sNextGoalNr     :: Integer
-    , _sSourceKind     :: SourceKind
-    , _sDiffSystem     :: Bool
+    { _sNodes           :: M.Map NodeId RuleACInst
+    , _sEdges           :: S.Set Edge
+    , _sLessAtoms       :: S.Set (NodeId, NodeId)
+    , _sLastAtom        :: Maybe NodeId
+    , _sEqStore         :: EqStore
+    , _sFormulas        :: S.Set LNGuarded
+    , _sSolvedFormulas  :: S.Set LNGuarded
+    , _sLemmas          :: S.Set LNGuarded
+    , _sGoals           :: M.Map Goal GoalStatus
+    , _sNextGoalNr      :: Integer
+    , _sSourceKind      :: SourceKind
+    , _sDiffSystem      :: Bool
+    , _sRuleVariants    :: M.Map NodeId (SplitId, Maybe Int)
+    , _sACSubstitutions :: M.Map NodeId (LNSubstVFresh)
     }
     -- NOTE: Don't forget to update 'substSystem' in
     -- "Constraint.Solver.Reduction" when adding further fields to the
@@ -448,7 +453,7 @@ emptySystem :: SourceKind -> Bool -> System
 emptySystem d isdiff = System
     M.empty S.empty S.empty Nothing emptyEqStore
     S.empty S.empty S.empty
-    M.empty 0 d isdiff
+    M.empty 0 d isdiff M.empty M.empty
 
 -- | The empty diff constraint system.
 emptyDiffSystem :: DiffSystem
@@ -908,8 +913,17 @@ getMirrorDG ctxt side sys = {-trace (show (evalFreshAvoiding newNodes (freshAndP
             
         getVariants :: MonadFresh m => (RuleACInst, Maybe RuleACConstrs) -> m ([RuleACInst])
         getVariants (r, Nothing)       = return [r]
-        getVariants (r, Just (Disj v)) = appSubst v
+        getVariants (r, Just (Disj v)) = appSubst [( (v!!variantNumber))]
           where
+            variantNumber = g $ M.lookup idx $ L.get sRuleVariants sys
+            
+            g (Just (_,(Just x))) = x
+            g _                   = if length v == 1 && isEmptyVFresh (head v)
+                                      then 0
+                                      else error err
+            
+            err = "Variant Number " ++ show idx ++ " not found:" ++ show r ++ " - " ++ show v ++ " - " ++ show (L.get sRuleVariants sys) ++ " - " ++ show sys
+                        
             appSubst :: MonadFresh m => [LNSubstVFresh] -> m ([RuleACInst])
             appSubst []     = return []
             appSubst (x:xs) = do
@@ -947,7 +961,7 @@ getMirrorDG ctxt side sys = {-trace (show (evalFreshAvoiding newNodes (freshAndP
         
     unifiers :: (Maybe [(Equal LNFact, (LVar, LNTerm))],[Equal LNFact]) -> ([SubstVFresh Name LVar], [(LVar, LNTerm)])
     unifiers (Nothing, _)                  = ([], [])
-    unifiers (Just equalfacts, equaledges) = (runReader (unifyLNFactEqs $ (map fst equalfacts) ++ equaledges) (getMaudeHandle ctxt side), map snd equalfacts)
+    unifiers (Just equalfacts, equaledges) = ({-runReader -}(unifyLNFactEqsIgAC $ (map fst equalfacts) ++ equaledges) {-(getMaudeHandle ctxt side)-}, map snd equalfacts)
     
     equalities :: Bool -> M.Map NodeId RuleACInst -> (Maybe [(Equal LNFact, (LVar, LNTerm))],[Equal LNFact])
     equalities fixNewPublicVars newrules = (getNewVarEqualities fixNewPublicVars newrules, (getGraphEqualities newrules) ++ (getKUGraphEqualities newrules))
@@ -1264,6 +1278,7 @@ prettyNonGraphSystem se = vsep $ map combine -- text $ show se
   , ("solved formulas", vsep $ map prettyGuarded $ S.toList $ L.get sSolvedFormulas se)
   , ("unsolved goals",  prettyGoals False se)
   , ("solved goals",    prettyGoals True se)
+  , ("variants",        text $ show $ M.toList $ L.get sRuleVariants se)
 --   , ("system",          text $ show se)
 --   , ("DEBUG: Goals",    text $ show $ M.toList $ L.get sGoals se) -- prettyGoals False se)
 --   , ("DEBUG: Nodes",    vcat $ map prettyNode $ M.toList $ L.get sNodes se)
@@ -1399,13 +1414,16 @@ instance Apply SourceKind where
     apply = const id
 
 instance Apply System where
-    apply subst (System a b c d e f g h i j k l) =
+    apply subst (System a b c d e f g h i j k l m n) =
         System (apply subst a)
         -- we do not apply substitutions to node variables, so we do not apply them to the edges either
         b
         (apply subst c) (apply subst d)
         (apply subst e) (apply subst f) (apply subst g) (apply subst h)
         i j (apply subst k) (apply subst l)
+        -- we do not apply substitutions to node variables, so we do not apply them to the variant counters either
+        m
+        (apply subst n)
 
 instance HasFrees SourceKind where
     foldFrees = const mempty
@@ -1418,7 +1436,7 @@ instance HasFrees GoalStatus where
     mapFrees  = const pure
 
 instance HasFrees System where
-    foldFrees fun (System a b c d e f g h i j k l) =
+    foldFrees fun (System a b c d e f g h i j k l m n) =
         foldFrees fun a `mappend`
         foldFrees fun b `mappend`
         foldFrees fun c `mappend`
@@ -1430,9 +1448,11 @@ instance HasFrees System where
         foldFrees fun i `mappend`
         foldFrees fun j `mappend`
         foldFrees fun k `mappend`
-        foldFrees fun l
+        foldFrees fun l `mappend`
+        foldFrees fun m `mappend`
+        foldFrees fun n
 
-    foldFreesOcc fun ctx (System a _b _c _d _e _f _g _h _i _j _k _l) =
+    foldFreesOcc fun ctx (System a _b _c _d _e _f _g _h _i _j _k _l _m _n) =
         foldFreesOcc fun ("a":ctx') a {- `mappend`
         foldFreesCtx fun ("b":ctx') b `mappend`
         foldFreesCtx fun ("c":ctx') c `mappend`
@@ -1446,7 +1466,7 @@ instance HasFrees System where
         foldFreesCtx fun ("k":ctx') k -}
       where ctx' = "system":ctx
 
-    mapFrees fun (System a b c d e f g h i j k l) =
+    mapFrees fun (System a b c d e f g h i j k l m n) =
         System <$> mapFrees fun a
                <*> mapFrees fun b
                <*> mapFrees fun c
@@ -1459,6 +1479,8 @@ instance HasFrees System where
                <*> mapFrees fun j
                <*> mapFrees fun k
                <*> mapFrees fun l
+               <*> mapFrees fun m
+               <*> mapFrees fun n
 
 
 -- Special comparison functions to ignore new var instantiations
@@ -1482,11 +1504,11 @@ compareNodesUpToNewVars n1 n2 = compareListsUpToNewVars (M.toAscList n1) (M.toAs
 compareSystemsUpToNewVars :: System -> System -> Ordering
 -- when we have trace systems, we can ignore new variable instantiations
 compareSystemsUpToNewVars
-   (System a1 b1 c1 d1 e1 f1 g1 h1 i1 j1 k1 False)
-   (System a2 b2 c2 d2 e2 f2 g2 h2 i2 j2 k2 False)
+   (System a1 b1 c1 d1 e1 f1 g1 h1 i1 j1 k1 False m1 n1)
+   (System a2 b2 c2 d2 e2 f2 g2 h2 i2 j2 k2 False m2 n2)
        = if compareNodes == EQ then
-            compare (System M.empty b1 c1 d1 e1 f1 g1 h1 i1 j1 k1 False)
-                (System M.empty b2 c2 d2 e2 f2 g2 h2 i2 j2 k2 False)
+            compare (System M.empty b1 c1 d1 e1 f1 g1 h1 i1 j1 k1 False m1 n1)
+                (System M.empty b2 c2 d2 e2 f2 g2 h2 i2 j2 k2 False m2 n2)
          else
             compareNodes
         where

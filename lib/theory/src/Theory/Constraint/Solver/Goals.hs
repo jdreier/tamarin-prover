@@ -23,7 +23,7 @@ module Theory.Constraint.Solver.Goals (
   , solveGoal
   ) where
 
--- import           Debug.Trace
+import           Debug.Trace
 
 import           Prelude                                 hiding (id, (.))
 
@@ -380,14 +380,21 @@ solveSplit :: SplitId -> Reduction String
 solveSplit x = do
     split <- gets ((`performSplit` x) . get sEqStore)
     let errMsg = error "solveSplit: inexistent split-id"
-    store      <- maybe errMsg disjunctionOfList split
+    (i, store) <- maybe errMsg disjunctionOfList $ fmap (zip [(0::Int)..]) $ split
     -- FIXME: Simplify this interaction with the equation store
     hnd        <- getMaudeHandle
     substCheck <- gets (substCreatesNonNormalTerms hnd)
     store'     <- simp hnd substCheck store
     contradictoryIf (eqsIsFalse store')
     sEqStore =: store'
+    modM sRuleVariants (M.map (up i))
     return "split"
+      where
+        up i (i', Nothing) | i'==x     = (i', Just i)
+                           | otherwise = (i', Nothing)
+        up i (i', Just j)  | i'==x     = error  $ "solveSplit: variant already chosen: " ++ show j ++ " instead of " ++ show i
+                           | otherwise = (i', Just j)
+        
 
 -- | CR-rule *S_disj*: solve a disjunction of guarded formulas using a case
 -- distinction.

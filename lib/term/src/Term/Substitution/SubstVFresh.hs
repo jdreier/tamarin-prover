@@ -28,6 +28,7 @@ module Term.Substitution.SubstVFresh (
   , domVFresh
   , rangeVFresh
   , isRenaming
+  , isEmptyVFresh
   , imageOfVFresh
 
   -- * views
@@ -148,6 +149,10 @@ isRenamedVar lv subst =
 -- | Returns @True@ if the substitution is a renaming.
 isRenaming :: LSubstVFresh c -> Bool
 isRenaming subst = all (`isRenamedVar` subst) $ domVFresh subst
+
+-- | Returns @True@ if the substitution is a renaming.
+isEmptyVFresh :: LSubstVFresh c -> Bool
+isEmptyVFresh (SubstVFresh m) = M.null m
 
 -- | Returns the image of @i@ under @subst@ if @i@ is in the domain of @subst@.
 imageOfVFresh :: IsVar v => SubstVFresh c v -> v -> Maybe (VTerm c v)
