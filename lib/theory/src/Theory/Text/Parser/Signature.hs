@@ -164,7 +164,8 @@ equations =
       (symbol "equations" *> colon *> commaSep1 equation) Data.Functor.$> ()
     where
       equation = do
-        rrule <- RRule <$> term llitNoPub True <*> (equalSign *> term llitNoPub True)
+        -- Quick and dirty modification to allow addition of equations for builtins
+        rrule <- RRule <$> term llitNoPub False {- True -} <*> (equalSign *> term llitNoPub False {- True -})
         case rRuleToCtxtStRule rrule of
           Just str ->
               modifyStateSig (addCtxtStRule str)
