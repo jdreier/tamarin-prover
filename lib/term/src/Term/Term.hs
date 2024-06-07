@@ -18,6 +18,7 @@ module Term.Term (
     -- ** Smart constructors
     , fAppOne
     , fAppZero
+    , fAppDHNeutral
     , fAppDiff
     , fAppExp
     , fAppInv
@@ -37,8 +38,12 @@ module Term.Term (
     , isEMap
     , isNullaryPublicFunction
     , isPrivateFunction
+    , isAC
     , getLeftTerm
     , getRightTerm
+
+    -- ** "Protected" subterms
+    , allProtSubterms
 
     -- * AC, C, and NonAC funcion symbols
     , FunSym(..)
@@ -59,17 +64,18 @@ module Term.Term (
     , emapSymString
     , unionSymString
     , oneSymString
+    , dhNeutralSymString
     , multSymString
     , zeroSymString
     , xorSymString
-    
+
     -- ** Function symbols
     , diffSym
     , expSym
     , pmultSym
     , oneSym
     , zeroSym
-
+    , dhNeutralSym
     -- ** concrete signatures
     , dhFunSig
     , bpFunSig
@@ -105,6 +111,9 @@ import           Term.Term.Raw
 -- | Smart constructors for one, zero.
 fAppOne :: Term a
 fAppOne = fAppNoEq oneSym []
+
+fAppDHNeutral :: Term a
+fAppDHNeutral = fAppNoEq dhNeutralSym []
 
 fAppZero :: Term a
 fAppZero = fAppNoEq zeroSym []
@@ -176,6 +185,11 @@ isPrivateFunction :: Term a -> Bool
 isPrivateFunction (viewTerm -> FApp (NoEq (_, (_,Private))) _) = True
 isPrivateFunction _                                            = False
 
+-- | 'True' iff the term is an AC-operator.
+isAC :: Show a => Term a -> Bool
+isAC (viewTerm -> FApp (AC _) _) = True
+isAC _                           = False
+
 ----------------------------------------------------------------------
 -- Convert Diff Terms
 ----------------------------------------------------------------------
@@ -195,6 +209,20 @@ getLeftTerm t = getSide DiffLeft t
 
 getRightTerm :: Term a -> Term a
 getRightTerm t = getSide DiffRight t
+
+----------------------------------------------------------------------
+-- "protected" subterms
+-- NB: here anything but a pair or an AC symbol is protected!
+----------------------------------------------------------------------
+
+-- Given a term, compute all protected subterms, i.e. all terms
+-- which top symbol is a function, but not a pair, nor an AC symbol
+allProtSubterms :: Show a => Term a -> [Term a]
+allProtSubterms t@(viewTerm -> FApp _ as) | isPair t || isAC t
+        = concatMap allProtSubterms as
+allProtSubterms t@(viewTerm -> FApp _ as) | otherwise
+        = t:concatMap allProtSubterms as
+allProtSubterms _                                     = []
 
 ----------------------------------------------------------------------
 -- Pretty printing

@@ -1,7 +1,7 @@
 -- |
 -- Copyright   : (c) 2010-2012 Benedikt Schmidt
 -- License     : GPL v3 (see LICENSE)
--- 
+--
 -- Maintainer  : Benedikt Schmidt <beschmi@gmail.com>
 --
 -- Builtin rewriting rules.
@@ -17,7 +17,7 @@ module Term.Builtin.Rules (
   , asymEncRules
   , signatureRules
   , revealSignatureRules
-
+  , locationReportRules
   -- * Convenience export
   , module Term.Builtin.Signature
 ) where
@@ -39,7 +39,7 @@ dhRules :: Set (RRule LNTerm)
 dhRules = S.fromList
     [ expo(x1,one) `RRule` x1
     , expo(expo(x1,x2),x3) `RRule` expo(x1,(x2 *: x3))
-
+    , expo(dhNeutral,x1) `RRule` dhNeutral
     , x1 *: one `RRule` x1
     , inv (inv x1) `RRule` x1
     , inv one `RRule` one
@@ -54,6 +54,7 @@ dhRules = S.fromList
   where
     expo = fAppExp
     inv  = fAppInv
+    dhNeutral = fAppDHNeutral
     one  = fAppOne
 
 -- | The rewriting rules for bilinear pairing. These rules extend the
@@ -98,3 +99,7 @@ signatureRules = S.fromList [ verify (sign (x1,x2), x1, pk x2) `CtxtStRule` (StR
 revealSignatureRules = S.fromList [ revealVerify (revealSign (x1,x2), x1, pk x2) `CtxtStRule` (StRhs [[0,0]] trueC),
                                     extractMessage (revealSign (x1,x2)) `CtxtStRule` (StRhs [[0,0]] x1)]
 
+locationReportRules :: Set (CtxtStRule)
+locationReportRules = S.fromList [ check_rep (rep (x1,x2), x2) `CtxtStRule` (StRhs [[0,0]] x1),
+                                   get_rep (rep (x1,x2)) `CtxtStRule` (StRhs [[0,0]] x1)
+                                 ]
