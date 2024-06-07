@@ -146,6 +146,7 @@ ppMaude t = case viewTerm t of
     Lit (FreshVar _ _)       -> error "Term.Maude.Types.ppMaude: FreshVar not allowed"
     FApp (NoEq fsym) []      -> ppMaudeNoEqSym fsym
     FApp (NoEq fsym) as      -> ppMaudeNoEqSym fsym <> ppArgs as
+    FApp (Mac _) _           -> error "Term.Maude.Types.ppMaude: Macros not allowed"
     FApp (C fsym) as         -> ppMaudeCSym fsym    <> ppArgs as
     FApp (AC op) as          -> ppMaudeACSym op     <> ppArgs as
     FApp List as             -> "list(" <> ppList as <> ")"

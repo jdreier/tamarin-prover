@@ -257,9 +257,10 @@ elemNotBelowReducible _ _ _ = False
 -- | Convert a function symbol to its name.
 showFunSymName :: FunSym -> String
 showFunSymName (NoEq (bs, _)) = BC.unpack bs
+showFunSymName (Mac (bs, _))  = BC.unpack bs
 showFunSymName (AC op)        = show op
-showFunSymName (C op )           = show op
-showFunSymName List              = "List"
+showFunSymName (C op )        = show op
+showFunSymName List           = "List"
 
 -- | Pretty print a term.
 prettyTerm :: (Document d, Show l) => (l -> d) -> Term l -> d
@@ -274,6 +275,7 @@ prettyTerm ppLit = ppTerm
         FApp (NoEq s)   _       | s == pairSym    -> ppTerms ", " 1 "<" ">" (split t)
         FApp (NoEq (f, _)) []                     -> text (BC.unpack f)
         FApp (NoEq (f, _)) ts                     -> ppFun f ts
+        FApp (Mac  (f, _)) ts                     -> ppFun f ts
         FApp (C EMap)      ts                     -> ppFun emapSymString ts
         FApp List          ts                     -> ppFun "LIST" ts
 

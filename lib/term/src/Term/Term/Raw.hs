@@ -32,6 +32,7 @@ module Term.Term.Raw (
     , fApp
     , fAppAC
     , fAppC
+    , fAppMac
     , fAppNoEq
     , fAppList
     , unsafefApp
@@ -103,6 +104,7 @@ termViewToTerm (FApp sym ts) = FAPP sym ts
 fApp :: Ord a => FunSym -> [Term a] -> Term a
 fApp (AC acSym)  ts = fAppAC acSym ts
 fApp (C o)       ts = fAppC o ts
+fApp (Mac m)     ts = fAppMac m ts
 fApp List        ts = FAPP List ts
 fApp s@(NoEq _)  ts = FAPP s ts
 
@@ -122,6 +124,10 @@ fAppAC acsym as  =
 -- | Smart constructor for C terms.
 fAppC :: Ord a => CSym -> [Term a] -> Term a
 fAppC nacsym as = FAPP (C nacsym) (sort as)
+
+-- | Smart constructor for term macros.
+fAppMac :: Ord a => MacSym -> [Term a] -> Term a
+fAppMac macsym as = FAPP (Mac macsym) (sort as)
 
 -- | Smart constructor for non-AC/C terms.
 {-# INLINE fAppNoEq #-}
@@ -153,6 +159,7 @@ data TermView2 a = FExp (Term a) (Term a)   | FInv (Term a) | FMult [Term a] | O
                  | FDiff (Term a) (Term a)
                  | FAppNoEq NoEqSym [Term a]
                  | FAppC CSym [Term a]
+                 | FMac MacSym [Term a]
                  | FList [Term a]
                  | Lit2 a
   deriving (Show, Eq, Ord)
@@ -170,6 +177,7 @@ viewTerm2 t@(FAPP (AC o) ts)
     acSymToConstr NatPlus = FNatPlus
     acSymToConstr Xor   = FXor
 viewTerm2 (FAPP (C EMap) [ t1 ,t2 ]) = FEMap t1 t2
+viewTerm2 (FAPP (Mac m) ts)        = FMac m ts
 viewTerm2 t@(FAPP (C _)  _)          = error $ "viewTerm2: malformed term `"++show t++"'"
 viewTerm2 t@(FAPP (NoEq o) ts) = case ts of
     [ t1, t2 ] | o == expSym    -> FExp   t1 t2  -- ensure here that FExp is always exp, never a user-defined symbol
@@ -215,6 +223,7 @@ instance Show a => Show (Term a) where
         FApp   (NoEq (s,_)) as -> BC.unpack s++"("++(intercalate "," (map show as))++")"
         FApp   (C EMap) as     -> BC.unpack emapSymString++"("++(intercalate "," (map show as))++")"
         FApp   List as         -> "LIST"++"("++(intercalate "," (map show as))++")"
+        FApp   (Mac (m, _)) as -> BC.unpack m++"("++(intercalate "," (map show as))++")"
         FApp   (AC o) as       -> show o++"("++(intercalate "," (map show as))++")"
 
 -- | The fold function for @Term a@.

@@ -16,6 +16,7 @@ module Term.Term.FunctionSymbols (
       FunSym(..)
     , ACSym(..)
     , CSym(..)
+    , MacSym
     , Privacy(..)
     , Constructability(..)
     , NoEqSym
@@ -106,6 +107,9 @@ data Constructability = Constructor | Destructor
 -- | NoEq function symbols (with respect to the background theory).
 type NoEqSym = (ByteString, (Int, Privacy,Constructability)) -- ^ operator name, arity, private, destructor
 
+-- | Macro function symbols.
+type MacSym = (ByteString, Int) -- ^ macro name, arity
+
 -- | C(ommutative) function symbols
 data CSym = EMap
   deriving (Eq, Ord, Typeable, Data, Show, Generic, NFData, Binary)
@@ -114,6 +118,7 @@ data CSym = EMap
 data FunSym = NoEq  NoEqSym   -- ^ a free function function symbol of a given arity
             | AC    ACSym     -- ^ an AC function symbol, can be used n-ary
             | C     CSym      -- ^ a C function symbol of a given arity
+            | Mac   MacSym    -- ^ a macro symbol
             | List            -- ^ a free n-ary function symbol of TOP sort
   deriving (Eq, Ord, Typeable, Data, Show, Generic, NFData, Binary)
 

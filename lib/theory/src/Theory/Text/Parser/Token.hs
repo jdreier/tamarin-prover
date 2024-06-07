@@ -149,8 +149,8 @@ import Theory.Sapic
 ------------------------------------------------------------------------------
 
 data ParserState = PState
-       { sig  :: MaudeSig              -- Current signature
-       , flags ::  S.Set String        -- Defined flags for pre-processing
+       { sig   :: MaudeSig            -- Current signature
+       , flags :: S.Set String        -- Defined flags for pre-processing
        }
        deriving( Eq, Ord, Show )
 

@@ -6,7 +6,7 @@
 -- Macro substitution and application
 
 module Term.Macro (
-    Macro
+      Macro
     , applyMacros
 ) where
 
@@ -18,7 +18,7 @@ type Macro = (B.ByteString, [LVar], Term (Lit Name LVar))
 
 -- | Change a Macro to a FunSym
 macroToFunSym :: Macro -> FunSym
-macroToFunSym (op, args, _) = NoEq (op, (length args, Private, Destructor))      
+macroToFunSym (op, args, _) = Mac (op, length args)      
 
 -- | Apply and substitute the macro on a LNTerm
 applyMacro :: FunSym -> [LVar] -> LNTerm -> LNTerm -> LNTerm

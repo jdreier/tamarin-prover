@@ -71,10 +71,12 @@ nfViaHaskell t0 = reader $ \hnd -> check hnd
             Lit2 _                                          -> True
             -- subterm rules
             FAppNoEq _ _ | setAny (struleApplicable t) strules -> False
+            -- macros
+            FMac _ _                                           -> False
             -- exponentiation
             FExp (viewTerm2 -> FExp _ _) _                  -> False
             FExp _                       (viewTerm2 -> One) -> False
-            FExp (viewTerm2 -> DHNeutral) _                -> False
+            FExp (viewTerm2 -> DHNeutral) _                 -> False
             -- inverses
             FInv (viewTerm2 -> FInv _)                      -> False
             FInv (viewTerm2 -> FMult ts) | any isInverse ts -> False
